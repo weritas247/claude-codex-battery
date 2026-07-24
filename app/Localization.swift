@@ -147,6 +147,18 @@ private let TR: [String: [String: String]] = [
     "ko": "배터리 크기", "ja": "バッテリーサイズ", "zh-Hans": "电池大小", "zh-Hant": "電池大小",
     "es": "Tamaño de batería",
   ],
+  "Display style": [
+    "ko": "표시 방식", "ja": "表示形式", "zh-Hans": "显示样式", "zh-Hant": "顯示樣式",
+    "es": "Estilo de pantalla",
+  ],
+  "Pixel batteries": [
+    "ko": "픽셀 배터리", "ja": "ピクセルバッテリー", "zh-Hans": "像素电池", "zh-Hant": "像素電池",
+    "es": "Baterías pixel",
+  ],
+  "Modern batteries": [
+    "ko": "일반 배터리 UI", "ja": "標準バッテリーUI", "zh-Hans": "标准电池界面", "zh-Hant": "標準電池介面",
+    "es": "Baterías modernas",
+  ],
   "Big": ["ko": "크게", "ja": "大", "zh-Hans": "大", "zh-Hant": "大", "es": "Grande"],
   "Small": ["ko": "작게", "ja": "小", "zh-Hans": "小", "zh-Hant": "小", "es": "Pequeño"],
   "Language": ["ko": "언어", "ja": "言語", "zh-Hans": "语言", "zh-Hant": "語言", "es": "Idioma"],

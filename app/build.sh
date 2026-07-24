@@ -6,10 +6,11 @@ APP="ClaudeCodexBattery.app"
 NAME="ClaudeCodexBattery"
 BID="com.dennykim.claude-codex-battery-app"
 VERSION="$(cat ../VERSION)"
+MACOS_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET:-12.0}"
 
 echo "🔨 Compiling…"
 rm -rf "$APP" "$NAME"
-swiftc -O *.swift -o "$NAME" -framework Cocoa -framework ServiceManagement
+swiftc -O -target "arm64-apple-macos${MACOS_DEPLOYMENT_TARGET}" *.swift -o "$NAME" -framework Cocoa -framework ServiceManagement
 
 echo "📦 Assembling .app bundle…"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

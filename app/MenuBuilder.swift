@@ -151,6 +151,14 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
       state: size == "small" ? .on : .off)
   row(settings, tr("Battery size")).submenu = sizeMenu
 
+  let displayMenu = NSMenu()
+  let displayMode = currentDisplayMode()
+  row(displayMenu, tr("Pixel batteries"), action: #selector(AppDelegate.setDisplayMode(_:)), target: target,
+      repr: "pixel", state: displayMode == "pixel" ? .on : .off)
+  row(displayMenu, tr("Modern batteries"), action: #selector(AppDelegate.setDisplayMode(_:)), target: target,
+      repr: "modern", state: displayMode == "modern" ? .on : .off)
+  row(settings, tr("Display style")).submenu = displayMenu
+
   let catMenu = NSMenu()
   let curCat = currentCatStyle()
   for (style, key) in [(CatStyle.none, "Off"), (.nyan, "Wide face"),

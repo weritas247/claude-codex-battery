@@ -24,6 +24,7 @@ struct ClaudeUsage {
 
 private let USAGE_CACHE = "\(STATE_DIR)/.claude-usage.json"
 private let LEGACY_USAGE_FILES = [
+  "\(HOME)/.claude/.statusline-usage-cache.json",
   "\(HOME)/.claude/MEMORY/STATE/usage-cache.json",
   "\(HOME)/.claude/PAI/MEMORY/STATE/usage-cache.json",
 ]
@@ -61,8 +62,13 @@ private func readFallback() -> (data: [String: Any], measuredAt: Int, live: Bool
     return (data, Int(jn(c["fetchedAt"]) ?? 0), false)
   }
   for f in LEGACY_USAGE_FILES {
-    if let d = jd(readJSONFile(f)), d["five_hour"] != nil {
-      return (d, fileMtime(f), false)
+    if let root = jd(readJSONFile(f)) {
+      // Claude Code's statusline cache wraps the usage payload in `data`.
+      let d = jd(root["data"]) ?? root
+      if d["five_hour"] != nil {
+        let measuredAt = jn(root["timestamp"]).map { Int($0) } ?? fileMtime(f)
+        return (d, measuredAt, false)
+      }
     }
   }
   return nil

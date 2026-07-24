@@ -51,10 +51,15 @@ private let PRESET_SMALL = Preset(font: FONT35, adv: { _ in 4 },
                                   bw: 14, bh: 9, capw: 16, gap: 3, ggap: 7, pad: 1, lblgap: 2, H: 9, dy: 2)
 
 let SIZE_FILE = "\(STATE_DIR)/.batt-size"
+let DISPLAY_MODE_KEY = "displayMode"
 func currentBattSize() -> String {
   let s = (try? String(contentsOfFile: SIZE_FILE, encoding: .utf8))?
     .trimmingCharacters(in: .whitespacesAndNewlines)
   return s == "small" ? "small" : "big"
+}
+
+func currentDisplayMode() -> String {
+  UserDefaults.standard.string(forKey: DISPLAY_MODE_KEY) == "modern" ? "modern" : "pixel"
 }
 
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)
@@ -241,4 +246,53 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
                          intent: .defaultIntent)
   else { return nil }
   return NSImage(cgImage: cg, size: NSSize(width: cv.w, height: cv.h))
+}
+
+// Modern battery layout: native macOS typography, rounded progress bars, and the value overlaid.
+func renderModernBatteryImage(dark: Bool, items: [BattItem]) -> NSImage? {
+  guard !items.isEmpty else { return nil }
+  let bodyW: CGFloat = 44
+  let bodyH: CGFloat = 20
+  let gap: CGFloat = 7
+  let groupGap: CGFloat = 12
+  var width: CGFloat = 6
+  var previousGroup: Character?
+  for item in items {
+    if let previousGroup, previousGroup != item.label.first { width += groupGap }
+    else if previousGroup != nil { width += gap }
+    width += bodyW + 3
+    previousGroup = item.label.first
+  }
+  let image = NSImage(size: NSSize(width: width, height: 28))
+  image.lockFocus()
+  let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
+  var x: CGFloat = 3
+  previousGroup = nil
+  for item in items {
+    if let previousGroup, previousGroup != item.label.first { x += groupGap }
+    else if previousGroup != nil { x += gap }
+    let rect = NSRect(x: x, y: 4, width: bodyW, height: bodyH)
+    let outline = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+    ink.setStroke(); outline.lineWidth = 1.5; outline.stroke()
+    let terminal = NSBezierPath(roundedRect: NSRect(x: x + bodyW, y: 10, width: 3, height: 8), xRadius: 1.5, yRadius: 1.5)
+    ink.setFill(); terminal.fill()
+    if let remain = item.remain {
+      let v = max(0, min(100, remain))
+      let fill = NSRect(x: x + 2, y: 6, width: max(0, (bodyW - 4) * v / 100), height: bodyH - 4)
+      let fillPath = NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5)
+      let c = heatRemain(remain, dark: dark)
+      NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255,
+              blue: CGFloat(c.b) / 255, alpha: 1).setFill()
+      fillPath.fill()
+      let value = "\(item.label) \(Int(v.rounded()))%"
+      let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
+      let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+      let size = (value as NSString).size(withAttributes: attrs)
+      (value as NSString).draw(at: NSPoint(x: x + (bodyW - size.width) / 2, y: 8), withAttributes: attrs)
+    }
+    x += bodyW + 3
+    previousGroup = item.label.first
+  }
+  image.unlockFocus()
+  return image
 }

@@ -133,6 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
   // Advance the cat one frame and redraw the icon only (menu untouched)
   @objc func catTick() {
+    if currentDisplayMode() == "modern" { return }
     if currentCatStyle() == .none { return }
     if animTimer?.isValid == true { return } // don't fight intro/glint playback
     guard let snap = lastSnap, let btn = statusItem.button else { return }
@@ -163,6 +164,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
   // Based on the cached snapshot, plays the glint sweep once if a golden battery is present
   func playGoldenGlint() {
+    if currentDisplayMode() == "modern" { return }
     if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
       FileHandle.standardError.write(Data("glint tick: lastSnap=\(lastSnap != nil)\n".utf8))
     }
@@ -239,8 +241,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     if let btn = statusItem.button {
       let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
       let st = catState(snap)
-      if !items.isEmpty, let finalImg = renderBatteryImage(dark: dark, items: items,
-                                                           cat: st, catFrameIndex: catIdx) {
+      let finalImg = currentDisplayMode() == "modern"
+        ? renderModernBatteryImage(dark: dark, items: items)
+        : renderBatteryImage(dark: dark, items: items, cat: st, catFrameIndex: catIdx)
+      if !items.isEmpty, let finalImg = finalImg {
+        if currentDisplayMode() == "modern" { catTimer?.invalidate() }
         restartCatTimer(st)
         // Startup sequence (once only) + golden battery glint sweep (whenever present) → the last frame is the actual state
         var frames: [NSImage] = []
@@ -319,6 +324,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     try? FileManager.default.createDirectory(atPath: STATE_DIR, withIntermediateDirectories: true)
     try? s.write(toFile: SIZE_FILE, atomically: true, encoding: .utf8)
     rerender() // re-render only — the data is unchanged so this reflects instantly
+  }
+
+  @objc func setDisplayMode(_ sender: NSMenuItem) {
+    guard let mode = sender.representedObject as? String else { return }
+    UserDefaults.standard.set(mode, forKey: DISPLAY_MODE_KEY)
+    rerender()
   }
 
   @objc func toggleLoginItem() {
