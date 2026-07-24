@@ -184,6 +184,8 @@ private let TR: [String: [String: String]] = [
     "ko": "GitHub 페이지 열기", "ja": "GitHubページを開く", "zh-Hans": "打开 GitHub 页面",
     "zh-Hant": "開啟 GitHub 頁面", "es": "Abrir página de GitHub",
   ],
+  "Open Claude usage": ["ko": "Claude 사용량 페이지 열기", "ja": "Claude使用量を開く", "zh-Hans": "打开 Claude 使用量", "zh-Hant": "開啟 Claude 用量", "es": "Abrir uso de Claude"],
+  "Open Codex usage": ["ko": "Codex 사용량 페이지 열기", "ja": "Codex使用量を開く", "zh-Hans": "打开 Codex 使用量", "zh-Hant": "開啟 Codex 用量", "es": "Abrir uso de Codex"],
   "Quit": ["ko": "종료", "ja": "終了", "zh-Hans": "退出", "zh-Hant": "結束", "es": "Salir"],
   "⬇︎ Updating…": [
     "ko": "⬇︎ 업데이트…", "ja": "⬇︎ 更新中…", "zh-Hans": "⬇︎ 更新中…", "zh-Hant": "⬇︎ 更新中…",

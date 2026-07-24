@@ -4,6 +4,8 @@ import Cocoa
 let HOME = NSHomeDirectory()
 let STATE_DIR = "\(HOME)/.claude/swiftbar" // Shares cache/settings with the SwiftBar widget (same file format)
 let REPO_URL = "https://github.com/dennykim123/claude-codex-battery"
+let CLAUDE_USAGE_URL = "https://claude.ai/settings/usage"
+let CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage"
 let APP_VERSION = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 
 func firstExisting(_ paths: [String]) -> String? { paths.first { FileManager.default.fileExists(atPath: $0) } }

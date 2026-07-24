@@ -99,6 +99,7 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
       let parent = row(menu, trf("today by model · $%.0f total", m.total), size: 11, color: GRAY)
       parent.submenu = sub
     }
+    row(menu, tr("Open Claude usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CLAUDE_USAGE_URL)
     menu.addItem(.separator())
   }
 
@@ -126,6 +127,7 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
       row(menu, "⚠ " + trf("data from %@ ago — check login/network", fmtDur(now - cx.measuredAt)),
           size: 11, color: WARN)
     }
+    row(menu, tr("Open Codex usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CODEX_USAGE_URL)
     menu.addItem(.separator())
   }
 
