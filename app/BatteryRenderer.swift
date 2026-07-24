@@ -2,8 +2,14 @@
 // (Builds CGImage directly instead of PNG encoding. Pixel placement matches the JS 1:1)
 import Cocoa
 
+enum Provider {
+  case claude, codex
+  var symbolName: String { self == .claude ? "sparkles" : "terminal" }
+}
+
 struct BattItem {
-  let label: String // "C5"·"CW"·"CF"·"X5"·"XW"·"X" — the first letter is the group (C/X)
+  let label: String // internal period key: C5/CW/CF/X5/XW/X
+  let provider: Provider
   let remain: Double? // remaining % (nil means an empty capsule)
 }
 
@@ -262,7 +268,7 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
 // Modern battery layout: native macOS typography, rounded progress bars, and the value overlaid.
 func renderModernBatteryImage(dark: Bool, items: [BattItem]) -> NSImage? {
   guard !items.isEmpty else { return nil }
-  let bodyW: CGFloat = 44
+  let bodyW: CGFloat = 54
   let bodyH: CGFloat = 20
   let gap: CGFloat = 7
   let groupGap: CGFloat = 12
@@ -295,11 +301,17 @@ func renderModernBatteryImage(dark: Bool, items: [BattItem]) -> NSImage? {
       NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255,
               blue: CGFloat(c.b) / 255, alpha: 1).setFill()
       fillPath.fill()
-      let value = "\(item.label) \(Int(v.rounded()))%"
+      let period = item.label.contains("5") ? "5h" : item.label == "CF" ? "Fable" : "wk"
+      let value = "\(period) \(Int(v.rounded()))%"
       let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
       let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
       let size = (value as NSString).size(withAttributes: attrs)
-      (value as NSString).draw(at: NSPoint(x: x + (bodyW - size.width) / 2, y: 8), withAttributes: attrs)
+      if let symbol = NSImage(systemSymbolName: item.provider.symbolName, accessibilityDescription: nil) {
+        let icon = symbol.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)) ?? symbol
+        icon.isTemplate = true
+        icon.draw(in: NSRect(x: x + 3, y: 8, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
+      }
+      (value as NSString).draw(at: NSPoint(x: x + 16 + (bodyW - 16 - size.width) / 2, y: 8), withAttributes: attrs)
     }
     x += bodyW + 3
     previousGroup = item.label.first

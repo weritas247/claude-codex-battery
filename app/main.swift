@@ -29,28 +29,28 @@ func collectSnapshot() -> Snapshot {
 func battItems(_ snap: Snapshot) -> [BattItem] {
   var items: [BattItem] = []
   if let u = snap.usage {
-    if isMetricVisible("claude5") { items.append(BattItem(label: "C5", remain: u.fiveHour.map { max(0, 100 - $0.pct) })) }
-    if isMetricVisible("claudeWeek") { items.append(BattItem(label: "CW", remain: u.weekly.map { max(0, 100 - $0.pct) })) }
-    if isMetricVisible("claudeFable"), let f = u.fable { items.append(BattItem(label: "CF", remain: max(0, 100 - f.pct))) }
+    if isMetricVisible("claude5") { items.append(BattItem(label: "C5", provider: .claude, remain: u.fiveHour.map { max(0, 100 - $0.pct) })) }
+    if isMetricVisible("claudeWeek") { items.append(BattItem(label: "CW", provider: .claude, remain: u.weekly.map { max(0, 100 - $0.pct) })) }
+    if isMetricVisible("claudeFable"), let f = u.fable { items.append(BattItem(label: "CF", provider: .claude, remain: max(0, 100 - f.pct))) }
   } else if let b = snap.block, isMetricVisible("claude5") {
-    items.append(BattItem(label: "C5", remain: max(0, 100 - b.elapsedPct)))
+    items.append(BattItem(label: "C5", provider: .claude, remain: max(0, 100 - b.elapsedPct)))
   }
   if let cx = snap.codex, cx.primary != nil || cx.secondary != nil {
     // Only draws whichever window is active at the time — a missing window is omitted rather than shown as an empty capsule
     if isMetricVisible("codex5"), let p = windowState(cx.primary, now: snap.now) {
-      items.append(BattItem(label: "X5", remain: max(0, 100 - p.pct)))
+      items.append(BattItem(label: "X5", provider: .codex, remain: max(0, 100 - p.pct)))
     }
     if isMetricVisible("codexWeek"), let s = windowState(cx.secondary, now: snap.now) {
-      items.append(BattItem(label: "XW", remain: max(0, 100 - s.pct)))
+      items.append(BattItem(label: "XW", provider: .codex, remain: max(0, 100 - s.pct)))
     }
   } else if let cr = snap.codex?.credits {
     // premium consumable-style: has credits=100 / exhausted=0 / unlimited=100
     let remain: Double = cr.unlimited ? 100 : (cr.hasCredits && (cr.balance ?? 0) > 0 ? 100 : 0)
-    items.append(BattItem(label: "X", remain: remain))
+    items.append(BattItem(label: "X", provider: .codex, remain: remain))
   }
   // For visually testing the golden battery (dev only)
   if ProcessInfo.processInfo.environment["CCB_GOLD_TEST"] != nil {
-    return items.map { BattItem(label: $0.label, remain: $0.remain == nil ? nil : 100) }
+    return items.map { BattItem(label: $0.label, provider: $0.provider, remain: $0.remain == nil ? nil : 100) }
   }
   return items
 }
@@ -82,7 +82,7 @@ func introFrames(items: [BattItem], dark: Bool, cat: CatState) -> [NSImage] {
         let r: Double? = j < i ? it.remain
           : j == i ? it.remain.map { $0 * t }
           : it.remain == nil ? nil : 0
-        return BattItem(label: it.label, remain: r)
+        return BattItem(label: it.label, provider: it.provider, remain: r)
       }
       if let img = renderBatteryImage(dark: dark, items: frame, cat: cat) { out.append(img) }
     }
@@ -449,8 +449,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 // ── --render-glint <path>: saves an intermediate glint frame as PNG (for render verification) ──
 if let idx = CommandLine.arguments.firstIndex(of: "--render-glint"), CommandLine.arguments.count > idx + 1 {
-  let items = [BattItem(label: "C5", remain: 100), BattItem(label: "CW", remain: 100),
-               BattItem(label: "X5", remain: 100)]
+  let items = [BattItem(label: "C5", provider: .claude, remain: 100), BattItem(label: "CW", provider: .claude, remain: 100),
+               BattItem(label: "X5", provider: .codex, remain: 100)]
   if let img = renderBatteryImage(dark: true, items: items, glintX: 12),
      let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
      let png = rep.representation(using: .png, properties: [:]) {
