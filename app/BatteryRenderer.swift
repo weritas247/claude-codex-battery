@@ -59,7 +59,7 @@ func currentBattSize() -> String {
 }
 
 func currentDisplayMode() -> String {
-  UserDefaults.standard.string(forKey: DISPLAY_MODE_KEY) == "modern" ? "modern" : "pixel"
+  UserDefaults.standard.string(forKey: DISPLAY_MODE_KEY) == "pixel" ? "pixel" : "modern"
 }
 
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)
