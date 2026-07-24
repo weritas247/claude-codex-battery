@@ -5,6 +5,33 @@ import Cocoa
 private let GRAY = "#8b949e"
 private let WARN = "#d29922"
 
+private func providerMenuImage(_ provider: Provider) -> NSImage? {
+  if provider == .codex, let app = installedProviderApp(.codex) {
+    let image = NSWorkspace.shared.icon(forFile: app.path)
+    image.size = NSSize(width: 16, height: 16)
+    return image
+  }
+  let name = provider == .claude ? "ClaudeProvider" : "CodexProvider"
+  guard let path = Bundle.main.path(forResource: name, ofType: "svg"), let image = NSImage(contentsOfFile: path) else { return nil }
+  image.size = NSSize(width: 16, height: 16)
+  image.isTemplate = true
+  return image
+}
+
+private func appMenuImage(_ provider: Provider) -> NSImage? {
+  if provider == .claude {
+    guard let path = Bundle.main.path(forResource: "ClaudeProvider", ofType: "svg"),
+          let image = NSImage(contentsOfFile: path) else { return nil }
+    image.size = NSSize(width: 16, height: 16)
+    image.isTemplate = true
+    return image
+  }
+  guard let app = installedProviderApp(provider) else { return nil }
+  let image = NSWorkspace.shared.icon(forFile: app.path)
+  image.size = NSSize(width: 16, height: 16)
+  return image
+}
+
 // Full state collected in a single refresh
 struct Snapshot {
   let now: Int
@@ -34,10 +61,11 @@ private func row(_ menu: NSMenu, _ text: String, mono: Bool = false, size: CGFlo
 
 // One remaining-percentage gauge line, e.g. "5h    ▕████████████░░░░░░░░▏  85%  ·  resets 3h 57m"
 private func gaugeRow(_ menu: NSMenu, _ label: String, pct: Double, resetText: String?) {
-  let r = max(0, 100 - pct)
-  var t = "\(label) ▕\(gaugeBar(r, 20))▏ \(Int(r.rounded()))%"
+  let used = max(0, min(100, 100 - pct))
+  let left = max(0, 100 - used)
+  var t = "\(label) ▕\(gaugeBar(used, 20))▏ \(Int(used.rounded()))% \(tr("used")) · \(Int(left.rounded()))% \(tr("left"))"
   if let reset = resetText { t += "  ·  \(reset)" }
-  row(menu, t, mono: true, color: heatRemainHex(r))
+  row(menu, t, mono: true, color: usageColor(used).hex)
 }
 
 private func resetText(_ resetsAt: Int?, now: Int) -> String? {
@@ -60,7 +88,8 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
 
   // ── Claude ──
   if hasClaude {
-    row(menu, "Claude Code · " + tr("% left"), size: 13, color: GRAY)
+    let header = row(menu, "Claude Code · " + tr("usage"), size: 13, color: GRAY)
+    header.image = providerMenuImage(.claude)
     if let u = snap.usage {
       if let w = u.fiveHour { gaugeRow(menu, labels.five, pct: w.pct, resetText: resetText(w.resetsAt, now: now)) }
       // Time-attack lap row: reach the reset (the finish line) before hitting 0%
@@ -99,14 +128,20 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
       let parent = row(menu, trf("today by model · $%.0f total", m.total), size: 11, color: GRAY)
       parent.submenu = sub
     }
-    row(menu, tr("Open Claude usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CLAUDE_USAGE_URL)
+    let usage = row(menu, tr("Open Claude usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CLAUDE_USAGE_URL)
+    usage.image = providerMenuImage(.claude)
+    if let app = installedProviderApp(.claude) {
+      let open = row(menu, tr("Open Claude app"), action: #selector(AppDelegate.openProviderApp(_:)), target: target, repr: app.path)
+      open.image = appMenuImage(.claude)
+    }
     menu.addItem(.separator())
   }
 
   // ── Codex ──
   if let cx = snap.codex {
     let suffix = cx.plan.map { " · \($0)" } ?? cx.limitId.map { " · \($0)" } ?? ""
-    row(menu, "Codex\(suffix) · " + tr("% left"), size: 13, color: GRAY)
+    let header = row(menu, "Codex\(suffix) · " + tr("usage"), size: 13, color: GRAY)
+    header.image = providerMenuImage(.codex)
     let p = windowState(cx.primary, now: now)
     let s = windowState(cx.secondary, now: now)
     if p == nil, s == nil, let cr = cx.credits {
@@ -127,7 +162,12 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
       row(menu, "⚠ " + trf("data from %@ ago — check login/network", fmtDur(now - cx.measuredAt)),
           size: 11, color: WARN)
     }
-    row(menu, tr("Open Codex usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CODEX_USAGE_URL)
+    let usage = row(menu, tr("Open Codex usage"), action: #selector(AppDelegate.openLink(_:)), target: target, repr: CODEX_USAGE_URL)
+    usage.image = providerMenuImage(.codex)
+    if let app = installedProviderApp(.codex) {
+      let open = row(menu, tr("Open Codex app"), action: #selector(AppDelegate.openProviderApp(_:)), target: target, repr: app.path)
+      open.image = appMenuImage(.codex)
+    }
     menu.addItem(.separator())
   }
 

@@ -55,6 +55,23 @@ func battItems(_ snap: Snapshot) -> [BattItem] {
   return items
 }
 
+func providerSummaries(_ snap: Snapshot) -> [ProviderSummary] {
+  var summaries: [ProviderSummary] = []
+  if let u = snap.usage {
+    if isMetricVisible("claude5"), let w = u.fiveHour { summaries.append(ProviderSummary(provider: .claude, remain: w.pct)) }
+    else if isMetricVisible("claudeWeek"), let w = u.weekly { summaries.append(ProviderSummary(provider: .claude, remain: w.pct)) }
+    else if isMetricVisible("claudeFable"), let f = u.fable { summaries.append(ProviderSummary(provider: .claude, remain: f.pct)) }
+  } else if let b = snap.block, isMetricVisible("claude5") {
+    summaries.append(ProviderSummary(provider: .claude, remain: max(0, 100 - b.elapsedPct)))
+  }
+  if let cx = snap.codex {
+    if isMetricVisible("codex5"), let p = windowState(cx.primary, now: snap.now) { summaries.append(ProviderSummary(provider: .codex, remain: p.pct)) }
+    else if isMetricVisible("codexWeek"), let s = windowState(cx.secondary, now: snap.now) { summaries.append(ProviderSummary(provider: .codex, remain: s.pct)) }
+    else if let cr = cx.credits { summaries.append(ProviderSummary(provider: .codex, remain: cr.unlimited || (cr.hasCredits && (cr.balance ?? 0) > 0) ? 100 : 0)) }
+  }
+  return summaries
+}
+
 // Cat state from the snapshot: burn rate → speed, projected depletion → panic
 // (CCB_CAT_TEST=sleep|walk|run|dash|panic forces a state for testing)
 func catState(_ snap: Snapshot) -> CatState {
@@ -239,22 +256,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func render(_ snap: Snapshot) {
     lastSnap = snap
     let items = battItems(snap)
+    let summaries = providerSummaries(snap)
     if let btn = statusItem.button {
       let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
       let st = catState(snap)
       let finalImg = currentDisplayMode() == "modern"
-        ? renderModernBatteryImage(dark: dark, items: items)
+        ? renderModernSummaryImage(dark: dark, summaries: summaries)
         : renderBatteryImage(dark: dark, items: items, cat: st, catFrameIndex: catIdx)
-      if !items.isEmpty, let finalImg = finalImg {
-        if currentDisplayMode() == "modern" { catTimer?.invalidate() }
-        restartCatTimer(st)
+      let hasDisplayData = currentDisplayMode() == "modern" ? !summaries.isEmpty : !items.isEmpty
+      if hasDisplayData, let finalImg = finalImg {
+        if currentDisplayMode() == "modern" { catTimer?.invalidate() } else { restartCatTimer(st) }
         // Startup sequence (once only) + golden battery glint sweep (whenever present) → the last frame is the actual state
         var frames: [NSImage] = []
         if !introPlayed {
           introPlayed = true
-          frames += introFrames(items: items, dark: dark, cat: st)
+        if currentDisplayMode() != "modern" { frames += introFrames(items: items, dark: dark, cat: st) }
         }
-        frames += glintFrames(items: items, dark: dark, cat: st)
+        if currentDisplayMode() != "modern" { frames += glintFrames(items: items, dark: dark, cat: st) }
         if frames.isEmpty {
           setButtonImage(finalImg)
         } else {
@@ -302,6 +320,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     if let s = sender.representedObject as? String, let url = URL(string: s) {
       NSWorkspace.shared.open(url)
     }
+  }
+
+  @objc func openProviderApp(_ sender: NSMenuItem) {
+    guard let path = sender.representedObject as? String else { return }
+    NSWorkspace.shared.open(URL(fileURLWithPath: path))
   }
 
   // Language choice: "auto" or a code from SUPPORTED_LANGS; also mirrored to

@@ -49,6 +49,12 @@ private let TR: [String: [String: String]] = [
   "used": [
     "ko": "사용", "ja": "使用", "zh-Hans": "已用", "zh-Hant": "已用", "es": "usado",
   ],
+  "left": [
+    "ko": "남음", "ja": "残り", "zh-Hans": "剩余", "zh-Hant": "剩餘", "es": "restante",
+  ],
+  "usage": [
+    "ko": "사용량", "ja": "使用量", "zh-Hans": "用量", "zh-Hant": "用量", "es": "uso",
+  ],
   "cached %@ ago — check login/network": [
     "ko": "%@ 전 캐시 — 로그인·네트워크 확인",
     "ja": "%@前のキャッシュ — ログイン/ネットワークを確認",
@@ -186,6 +192,8 @@ private let TR: [String: [String: String]] = [
   ],
   "Open Claude usage": ["ko": "Claude 사용량 페이지 열기", "ja": "Claude使用量を開く", "zh-Hans": "打开 Claude 使用量", "zh-Hant": "開啟 Claude 用量", "es": "Abrir uso de Claude"],
   "Open Codex usage": ["ko": "Codex 사용량 페이지 열기", "ja": "Codex使用量を開く", "zh-Hans": "打开 Codex 使用量", "zh-Hant": "開啟 Codex 用量", "es": "Abrir uso de Codex"],
+  "Open Claude app": ["ko": "Claude 앱 열기", "ja": "Claudeアプリを開く", "zh-Hans": "打开 Claude 应用", "zh-Hant": "開啟 Claude App", "es": "Abrir app de Claude"],
+  "Open Codex app": ["ko": "Codex 앱 열기", "ja": "Codexアプリを開く", "zh-Hans": "打开 Codex 应用", "zh-Hant": "開啟 Codex App", "es": "Abrir app de Codex"],
   "Quit": ["ko": "종료", "ja": "終了", "zh-Hans": "退出", "zh-Hant": "結束", "es": "Salir"],
   "⬇︎ Updating…": [
     "ko": "⬇︎ 업데이트…", "ja": "⬇︎ 更新中…", "zh-Hans": "⬇︎ 更新中…", "zh-Hant": "⬇︎ 更新中…",

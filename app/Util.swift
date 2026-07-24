@@ -6,6 +6,24 @@ let STATE_DIR = "\(HOME)/.claude/swiftbar" // Shares cache/settings with the Swi
 let REPO_URL = "https://github.com/dennykim123/claude-codex-battery"
 let CLAUDE_USAGE_URL = "https://claude.ai/settings/usage"
 let CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage"
+
+func installedProviderApp(_ provider: Provider) -> URL? {
+  let bundleIDs: [String] = provider == .claude
+    ? ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
+    : ["com.openai.codex", "com.openai.chatgpt"]
+  for id in bundleIDs {
+    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return url }
+  }
+  let names = provider == .claude ? ["Claude.app", "Claude Code.app"] : ["Codex.app", "ChatGPT.app"]
+  let roots = ["/Applications", "\(HOME)/Applications"]
+  for root in roots {
+    for name in names {
+      let path = "\(root)/\(name)"
+      if FileManager.default.fileExists(atPath: path) { return URL(fileURLWithPath: path) }
+    }
+  }
+  return nil
+}
 let APP_VERSION = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 
 func firstExisting(_ paths: [String]) -> String? { paths.first { FileManager.default.fileExists(atPath: $0) } }
@@ -47,8 +65,19 @@ func gaugeBar(_ pctIn: Double, _ w: Int) -> String {
   return s
 }
 
-// Remaining % → signal color (dropdown, dark-mode based — same as the widget's heatRemainHex)
-func heatRemainHex(_ r: Double) -> String { r <= 20 ? "#FF453A" : r < 50 ? "#FFD60A" : "#30D158" }
+struct UsageColor {
+  let r: UInt8
+  let g: UInt8
+  let b: UInt8
+  var hex: String { String(format: "#%02X%02X%02X", r, g, b) }
+}
+
+// Single source of truth for both the menu-bar capsule and dropdown gauge.
+func usageColor(_ used: Double) -> UsageColor {
+  if used >= 90 { return UsageColor(r: 255, g: 105, b: 97) }
+  if used >= 70 { return UsageColor(r: 255, g: 179, b: 64) }
+  return UsageColor(r: 116, g: 184, b: 129)
+}
 
 func hexColor(_ s: String) -> NSColor? {
   var h = s

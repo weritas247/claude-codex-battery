@@ -13,6 +13,50 @@ struct BattItem {
   let remain: Double? // remaining % (nil means an empty capsule)
 }
 
+struct ProviderSummary {
+  let provider: Provider
+  let remain: Double
+}
+
+private func drawProviderGlyph(_ provider: Provider, at point: NSPoint, color: NSColor) {
+  let providerColor = provider == .claude
+    ? NSColor(calibratedRed: 0.88, green: 0.42, blue: 0.25, alpha: 1)
+    : NSColor(calibratedRed: 0.18, green: 0.62, blue: 0.78, alpha: 1)
+  providerColor.setStroke(); providerColor.setFill()
+  if provider == .claude {
+    // Six-petal rosette: an original provider mark that remains legible at menu-bar size.
+    for i in 0..<6 {
+      let angle = CGFloat(i) * .pi / 3
+      let cx = point.x + 7 + cos(angle) * 3.2
+      let cy = point.y + 7 + sin(angle) * 3.2
+      NSBezierPath(ovalIn: NSRect(x: cx - 2.2, y: cy - 2.2, width: 4.4, height: 4.4)).fill()
+    }
+    NSColor.white.withAlphaComponent(0.9).setFill()
+    NSBezierPath(ovalIn: NSRect(x: point.x + 5.2, y: point.y + 5.2, width: 3.6, height: 3.6)).fill()
+  } else {
+    // Four linked loops: a geometric Codex-style mark, distinct from a terminal icon.
+    let p = NSBezierPath(); p.lineWidth = 1.8
+    p.appendOval(in: NSRect(x: point.x + 1, y: point.y + 5, width: 8, height: 5))
+    p.appendOval(in: NSRect(x: point.x + 5, y: point.y + 1, width: 5, height: 8))
+    p.appendOval(in: NSRect(x: point.x + 5, y: point.y + 5, width: 8, height: 5))
+    p.appendOval(in: NSRect(x: point.x + 1, y: point.y + 5, width: 5, height: 8))
+    p.stroke()
+  }
+}
+
+private func providerAsset(_ provider: Provider) -> NSImage? {
+  if provider == .codex, let app = installedProviderApp(.codex) {
+    let image = NSWorkspace.shared.icon(forFile: app.path)
+    image.size = NSSize(width: 16, height: 16)
+    return image
+  }
+  let name = provider == .claude ? "ClaudeProvider" : "CodexProvider"
+  guard let path = Bundle.main.path(forResource: name, ofType: "svg") else { return nil }
+  let image = NSImage(contentsOfFile: path)
+  image?.isTemplate = true
+  return image
+}
+
 // 4x6 pixel font (big preset)
 private let FONT46: [Character: [String]] = [
   "0": ["0110", "1001", "1001", "1001", "1001", "0110"],
@@ -128,7 +172,7 @@ private final class Canvas {
 private func heatRemain(_ r: Double, dark: Bool) -> RGB {
   if r <= 20 { return dark ? (255, 69, 58) : (255, 59, 48) } // systemRed
   if r < 50 { return dark ? (255, 214, 10) : (255, 204, 0) } // systemYellow
-  return dark ? (48, 209, 88) : (52, 199, 89) // systemGreen
+  return dark ? (91, 177, 111) : (96, 176, 113) // muted sage green
 }
 
 // 100% remaining = golden battery (a two-tone gold distinct from the warning yellow)
@@ -315,6 +359,46 @@ func renderModernBatteryImage(dark: Bool, items: [BattItem]) -> NSImage? {
     }
     x += bodyW + 3
     previousGroup = item.label.first
+  }
+  image.unlockFocus()
+  return image
+}
+
+// Provider-first menu bar layout: one compact battery per provider, with detailed windows in the menu.
+func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary]) -> NSImage? {
+  guard !summaries.isEmpty else { return nil }
+  let iconWidth: CGFloat = 13, iconGap: CGFloat = 5, bodyW: CGFloat = 38, bodyH: CGFloat = 18, itemGap: CGFloat = 7
+  let itemW = iconWidth + iconGap + bodyW + 3
+  let image = NSImage(size: NSSize(width: ceil(4 + CGFloat(summaries.count) * itemW + CGFloat(summaries.count - 1) * itemGap), height: 24))
+  image.lockFocus()
+  let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
+  var x: CGFloat = 2
+  for (index, summary) in summaries.enumerated() {
+    let bodyX = x + iconWidth + iconGap
+    let rect = NSRect(x: bodyX, y: 3, width: bodyW, height: bodyH)
+    let outline = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+    ink.setStroke(); outline.lineWidth = 1.0; outline.stroke()
+    let terminal = NSBezierPath(roundedRect: NSRect(x: bodyX + bodyW, y: 8, width: 3, height: 8), xRadius: 1.5, yRadius: 1.5)
+    ink.setFill(); terminal.fill()
+    let v = max(0, min(100, summary.remain))
+    let fill = NSRect(x: bodyX + 2, y: 5, width: max(0, (bodyW - 4) * v / 100), height: bodyH - 4)
+    let c = heatRemain(summary.remain, dark: dark)
+    NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1).setFill()
+    NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
+    if let icon = providerAsset(summary.provider) {
+      icon.draw(in: NSRect(x: x, y: 5, width: iconWidth, height: iconWidth), from: .zero, operation: .sourceOver, fraction: 1)
+    } else {
+      drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5), color: ink)
+    }
+    let value = "\(Int(v.rounded()))%"
+    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+    let size = (value as NSString).size(withAttributes: attrs)
+    (value as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
+    x += itemW
+    if index < summaries.count - 1 {
+      x += itemGap
+    }
   }
   image.unlockFocus()
   return image
