@@ -59,7 +59,7 @@ private func fetchCodexLive(now: Int) -> CodexUsage? {
   guard let raw = httpGet("https://chatgpt.com/backend-api/wham/usage",
                           headers: ["Authorization": "Bearer \(c.token)",
                                     "ChatGPT-Account-Id": c.account,
-                                    "User-Agent": "codex-cli"], timeout: 5),
+                                    "User-Agent": "codex-cli"], timeout: 5, provider: .codex),
         let d = jd(try? JSONSerialization.jsonObject(with: raw))
   else { return nil }
   let rl = jd(d["rate_limit"])

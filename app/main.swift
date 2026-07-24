@@ -1,6 +1,7 @@
 // Claude & Codex Usage Battery — a fully standalone native menu bar app (RunCat style)
 // Runs independently without SwiftBar/bun: keychain/auth file → queries the usage API directly → renders the battery.
 import Cocoa
+import QuartzCore
 import ServiceManagement
 
 let REFRESH_SECONDS = 120.0
@@ -122,6 +123,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var timer: Timer?
   var glintTimer: Timer?
   var catTimer: Timer?
+  var providerActivityMonitor: ProviderActivityMonitor?
+  var apiActiveProviders: Set<Provider> = []
+  var sessionActiveProviders: Set<Provider> = []
+  var activeProviders: Set<Provider> = []
+  var activityLayers: [Provider: CAShapeLayer] = [:]
   var catIdx = 0
   var lastSnap: Snapshot? // last collected result — size/theme changes re-render from this instantly without re-collecting
   var settingsWindow: NSWindow?
@@ -134,6 +140,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     statusItem.button?.title = "…"
+    providerActivityHandler = { [weak self] provider, active in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        if active { self.apiActiveProviders.insert(provider) }
+        else { self.apiActiveProviders.remove(provider) }
+        self.updateActivityAnimation()
+      }
+    }
+    providerActivityMonitor = ProviderActivityMonitor { [weak self] provider, active in
+      guard let self else { return }
+      if active { self.sessionActiveProviders.insert(provider) }
+      else { self.sessionActiveProviders.remove(provider) }
+      self.updateActivityAnimation()
+    }
+    providerActivityMonitor?.start()
     // Refresh battery colors on dark/light mode switch
     DistributedNotificationCenter.default().addObserver(
       self, selector: #selector(rerender),
@@ -146,6 +167,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let glintEvery = ProcessInfo.processInfo.environment["CCB_GLINT_SECONDS"].flatMap(Double.init) ?? 30.0
     glintTimer = Timer.scheduledTimer(withTimeInterval: glintEvery, repeats: true) { [weak self] _ in
       self?.playGoldenGlint()
+    }
+  }
+
+  func updateActivityAnimation() {
+    activeProviders = apiActiveProviders.union(sessionActiveProviders)
+    updateActivityLayers()
+  }
+
+  func updateActivityLayers() {
+    guard currentDisplayMode() == "modern",
+          let button = statusItem?.button,
+          let snap = lastSnap else {
+      activityLayers.values.forEach { $0.removeFromSuperlayer() }
+      activityLayers.removeAll()
+      return
+    }
+    button.wantsLayer = true
+    let summaries = providerSummaries(snap)
+    let imageWidth = button.image?.size.width ?? 0
+    let imageOriginX = max(0, (button.bounds.width - imageWidth) / 2)
+    let itemWidth: CGFloat = 61
+    let itemGap: CGFloat = 7
+
+    for provider in [Provider.claude, .codex] {
+      guard activeProviders.contains(provider),
+            let index = summaries.firstIndex(where: { $0.provider == provider }) else {
+        activityLayers.removeValue(forKey: provider)?.removeFromSuperlayer()
+        continue
+      }
+      let iconCenter = CGPoint(x: imageOriginX + 2 + CGFloat(index) * (itemWidth + itemGap) + 6.5,
+                               y: button.bounds.midY)
+      let color = provider == .claude
+        ? NSColor(calibratedRed: 0.92, green: 0.38, blue: 0.20, alpha: 1)
+        : NSColor(calibratedRed: 0.45, green: 0.68, blue: 1.0, alpha: 1)
+      let layer = activityLayers[provider] ?? {
+        let layer = CAShapeLayer()
+        layer.bounds = CGRect(x: 0, y: 0, width: 3, height: 3)
+        layer.path = CGPath(ellipseIn: layer.bounds, transform: nil)
+        layer.fillColor = color.cgColor
+        button.layer?.addSublayer(layer)
+        activityLayers[provider] = layer
+        return layer
+      }()
+      let path = CGMutablePath()
+      path.addEllipse(in: CGRect(x: iconCenter.x - 7, y: iconCenter.y - 7, width: 14, height: 14))
+      layer.position = CGPoint(x: iconCenter.x + 7, y: iconCenter.y)
+      if layer.animation(forKey: "orbit") == nil {
+        let orbit = CAKeyframeAnimation(keyPath: "position")
+        orbit.path = path
+        orbit.duration = 0.9
+        orbit.repeatCount = .infinity
+        orbit.calculationMode = .paced
+        layer.add(orbit, forKey: "orbit")
+      }
     }
   }
 
@@ -236,6 +311,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     img.isTemplate = false
     btn.title = ""
     btn.image = img
+    updateActivityLayers()
   }
 
   // Plays a frame sequence — stops on the last frame
@@ -542,6 +618,41 @@ if CommandLine.arguments.contains("--dump") {
   print("battItems:", battItems(snap).map { "\($0.label)=\($0.remain.map { String(Int($0.rounded())) } ?? "nil")" }.joined(separator: " "))
   print("swiftBarDuplicate:", swiftBarDuplicate())
   exit(0)
+}
+
+// ── --test-activity-monitor: verifies file append → active → idle without touching user sessions ──
+if CommandLine.arguments.contains("--test-activity-monitor") {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ccb-activity-\(UUID().uuidString)", isDirectory: true)
+  let claudeRoot = root.appendingPathComponent("claude", isDirectory: true)
+  let codexRoot = root.appendingPathComponent("codex", isDirectory: true)
+  try FileManager.default.createDirectory(at: claudeRoot, withIntermediateDirectories: true)
+  try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
+  let session = codexRoot.appendingPathComponent("session.jsonl")
+  try Data("{}\n".utf8).write(to: session)
+
+  var events: [String] = []
+  let monitor = ProviderActivityMonitor(roots: [.claude: claudeRoot.path, .codex: codexRoot.path]) {
+    provider, active in
+    let event = "\(provider == .claude ? "claude" : "codex"):\(active ? "active" : "idle")"
+    events.append(event)
+    print(event)
+  }
+  monitor.start()
+  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+    if let handle = try? FileHandle(forWritingTo: session) {
+      _ = try? handle.seekToEnd()
+      try? handle.write(contentsOf: Data("{\"delta\":1}\n".utf8))
+      try? handle.close()
+    }
+  }
+  RunLoop.main.run(until: Date().addingTimeInterval(7.5))
+  monitor.stop()
+  try? FileManager.default.removeItem(at: root)
+  let passed = events.contains("codex:active") && events.contains("codex:idle")
+    && !events.contains("claude:active")
+  print(passed ? "activity-monitor: PASS" : "activity-monitor: FAIL")
+  exit(passed ? 0 : 1)
 }
 
 // ── Duplicate-launch guard — quits silently if an instance with the same bundle ID is already running ──

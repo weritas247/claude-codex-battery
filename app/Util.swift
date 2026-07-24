@@ -112,12 +112,16 @@ func runCmd(_ bin: String, _ args: [String], timeout: TimeInterval = 10) -> Stri
 
 // Synchronous HTTP GET (only 2xx counts as success) — token stays in headers only, never in files/process args
 // If CCB_DEBUG=1, prints status/errors to stderr (for diagnostics)
-func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval = 8) -> Data? {
+var providerActivityHandler: ((Provider, Bool) -> Void)?
+
+func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval = 8,
+             provider: Provider? = nil) -> Data? {
   guard let url = URL(string: urlStr) else { return nil }
   var req = URLRequest(url: url, timeoutInterval: timeout)
   headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
   let sem = DispatchSemaphore(value: 0)
   var result: Data? = nil
+  if let provider { providerActivityHandler?(provider, true) }
   URLSession.shared.dataTask(with: req) { d, r, e in
     let code = (r as? HTTPURLResponse)?.statusCode ?? -1
     if (200 ..< 300).contains(code) { result = d }
@@ -125,6 +129,7 @@ func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval 
       let msg = "[httpGet] \(url.host ?? "?") status=\(code)\(e.map { " err=\($0.localizedDescription)" } ?? "")\n"
       FileHandle.standardError.write(Data(msg.utf8))
     }
+    if let provider { providerActivityHandler?(provider, false) }
     sem.signal()
   }.resume()
   if sem.wait(timeout: .now() + timeout + 2) == .timedOut,

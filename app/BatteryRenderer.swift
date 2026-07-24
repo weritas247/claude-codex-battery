@@ -2,7 +2,7 @@
 // (Builds CGImage directly instead of PNG encoding. Pixel placement matches the JS 1:1)
 import Cocoa
 
-enum Provider {
+enum Provider: Hashable {
   case claude, codex
   var symbolName: String { self == .claude ? "sparkles" : "terminal" }
 }
@@ -396,9 +396,7 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary]) -> NSIma
     let size = (value as NSString).size(withAttributes: attrs)
     (value as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
     x += itemW
-    if index < summaries.count - 1 {
-      x += itemGap
-    }
+    if index < summaries.count - 1 { x += itemGap }
   }
   image.unlockFocus()
   return image
