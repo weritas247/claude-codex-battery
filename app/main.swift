@@ -100,13 +100,14 @@ func glintFrames(items: [BattItem], dark: Bool, cat: CatState) -> [NSImage] {
   return out
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var statusItem: NSStatusItem!
   var timer: Timer?
   var glintTimer: Timer?
   var catTimer: Timer?
   var catIdx = 0
   var lastSnap: Snapshot? // last collected result — size/theme changes re-render from this instantly without re-collecting
+  var settingsWindow: NSWindow?
 
   var loginItemEnabled: Bool {
     if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
@@ -332,32 +333,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     rerender()
   }
 
-  @objc func showMetricSettings() {
-    let alert = NSAlert()
-    alert.messageText = tr("Menu bar items")
-    alert.informativeText = tr("Choose which limits appear in the menu bar. Detailed menu information stays available.")
-    let stack = NSStackView()
-    stack.orientation = .vertical
-    stack.alignment = .leading
-    stack.spacing = 8
-    let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"),
-                                        ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"),
-                                        ("codexWeek", "Codex week")]
-    var buttons: [(String, NSButton)] = []
-    for (key, title) in choices {
-      let button = NSButton(checkboxWithTitle: tr(title), target: nil, action: nil)
-      button.state = isMetricVisible(key) ? .on : .off
-      stack.addArrangedSubview(button)
-      buttons.append((key, button))
+  @objc func showSettings() {
+    if let window = settingsWindow { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 560),
+                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.title = tr("Settings")
+    window.isReleasedWhenClosed = false
+    window.delegate = self
+    let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 14
+    root.translatesAutoresizingMaskIntoConstraints = false
+    let content = NSView(); content.addSubview(root); window.contentView = content
+    NSLayoutConstraint.activate([
+      root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+      root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+      root.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+      root.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24)
+    ])
+    func heading(_ text: String) {
+      let label = NSTextField(labelWithString: text); label.font = .boldSystemFont(ofSize: 14); root.addArrangedSubview(label)
     }
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    alert.accessoryView = stack
-    alert.addButton(withTitle: tr("OK")); alert.addButton(withTitle: tr("Cancel"))
-    NSApp.activate(ignoringOtherApps: true)
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
-    for (key, button) in buttons { UserDefaults.standard.set(button.state == .on, forKey: "visible_\(key)") }
-    rerender()
+    func popup(_ items: [String], selected: Int, action: Selector) -> NSPopUpButton {
+      let p = NSPopUpButton(); p.addItems(withTitles: items); p.selectItem(at: selected); p.target = self; p.action = action; p.widthAnchor.constraint(equalToConstant: 230).isActive = true; return p
+    }
+    heading(tr("Appearance"))
+    let appearance = NSGridView(views: [
+      [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
+      [NSTextField(labelWithString: tr("Battery size")), popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))],
+      [NSTextField(labelWithString: tr("Cat")), popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))],
+    ])
+    appearance.rowSpacing = 10; appearance.columnSpacing = 18; root.addArrangedSubview(appearance)
+    heading(tr("Menu bar items"))
+    let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"), ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"), ("codexWeek", "Codex week")]
+    let metrics = NSStackView(); metrics.orientation = .vertical; metrics.alignment = .leading; metrics.spacing = 7
+    for (key, title) in choices {
+      let button = NSButton(checkboxWithTitle: tr(title), target: self, action: #selector(toggleMetric(_:))); button.identifier = NSUserInterfaceItemIdentifier("visible_\(key)"); button.state = isMetricVisible(key) ? .on : .off; metrics.addArrangedSubview(button)
+    }
+    root.addArrangedSubview(metrics)
+    heading(tr("General"))
+    let langCodes = ["auto"] + LANG_DISPLAY.map { $0.code }
+    let langTitles = [tr("System default")] + LANG_DISPLAY.map { $0.name }
+    let savedLang = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
+    let general = NSGridView(views: [[NSTextField(labelWithString: tr("Language")), popup(langTitles, selected: langCodes.firstIndex(of: savedLang) ?? 0, action: #selector(settingsLanguageChanged(_:)))]]); general.rowSpacing = 10; general.columnSpacing = 18; root.addArrangedSubview(general)
+    if #available(macOS 13.0, *) { let login = NSButton(checkboxWithTitle: tr("Start at login"), target: self, action: #selector(toggleLoginItem)); login.state = loginItemEnabled ? .on : .off; root.addArrangedSubview(login) }
+    let links = NSStackView(); links.orientation = .horizontal; links.spacing = 10
+    if lastSnap?.block != nil { let cc = NSButton(title: tr("Open ccusage dashboard"), target: self, action: #selector(openDashboard)); links.addArrangedSubview(cc) }
+    let gh = NSButton(title: tr("Open GitHub page"), target: self, action: #selector(openGitHubFromSettings)); links.addArrangedSubview(gh); root.addArrangedSubview(links)
+    let close = NSButton(title: tr("Close"), target: self, action: #selector(closeSettings)); close.keyEquivalent = "\r"; close.controlSize = .large; close.widthAnchor.constraint(equalToConstant: 110).isActive = true; root.addArrangedSubview(close)
+    settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
   }
+
+  @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); rerender() }
+  @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
+  @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
+  @objc func settingsLanguageChanged(_ sender: NSPopUpButton) { let codes = ["auto"] + LANG_DISPLAY.map { $0.code }; let item = NSMenuItem(); item.representedObject = codes[sender.indexOfSelectedItem]; setLang(item) }
+  @objc func toggleMetric(_ sender: NSButton) { if let key = sender.identifier?.rawValue { UserDefaults.standard.set(sender.state == .on, forKey: key); rerender() } }
+  @objc func openGitHubFromSettings() { NSWorkspace.shared.open(URL(string: REPO_URL)!) }
+  @objc func closeSettings() { settingsWindow?.close() }
+  func windowWillClose(_ notification: Notification) { settingsWindow = nil }
 
   @objc func toggleLoginItem() {
     guard #available(macOS 13.0, *) else { return }

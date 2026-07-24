@@ -141,59 +141,7 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
   }
   row(menu, tr("Refresh"), action: #selector(AppDelegate.refresh), target: target, key: "r")
 
-  // Settings submenu — size · language · auto-start · shortcuts · version
-  let settings = NSMenu()
-  let sizeMenu = NSMenu()
-  let size = currentBattSize()
-  row(sizeMenu, tr("Big"), action: #selector(AppDelegate.setSizeBig), target: target,
-      state: size == "big" ? .on : .off)
-  row(sizeMenu, tr("Small"), action: #selector(AppDelegate.setSizeSmall), target: target,
-      state: size == "small" ? .on : .off)
-  row(settings, tr("Battery size")).submenu = sizeMenu
-
-  let displayMenu = NSMenu()
-  let displayMode = currentDisplayMode()
-  row(displayMenu, tr("Pixel batteries"), action: #selector(AppDelegate.setDisplayMode(_:)), target: target,
-      repr: "pixel", state: displayMode == "pixel" ? .on : .off)
-  row(displayMenu, tr("Modern batteries"), action: #selector(AppDelegate.setDisplayMode(_:)), target: target,
-      repr: "modern", state: displayMode == "modern" ? .on : .off)
-  row(settings, tr("Display style")).submenu = displayMenu
-  row(settings, tr("Menu bar items…"), action: #selector(AppDelegate.showMetricSettings), target: target)
-
-  let catMenu = NSMenu()
-  let curCat = currentCatStyle()
-  for (style, key) in [(CatStyle.none, "Off"), (.nyan, "Wide face"),
-                       (.slim, "Slim face"), (.slime, "Slime")] {
-    row(catMenu, tr(key), action: #selector(AppDelegate.setCatStyle(_:)), target: target,
-        repr: style.rawValue, state: curCat == style ? .on : .off)
-  }
-  row(settings, tr("Cat")).submenu = catMenu
-
-  let langMenu = NSMenu()
-  let saved = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
-  row(langMenu, tr("System default"), action: #selector(AppDelegate.setLang(_:)), target: target,
-      repr: "auto", state: saved == "auto" ? .on : .off)
-  langMenu.addItem(.separator())
-  for l in LANG_DISPLAY {
-    row(langMenu, l.name, action: #selector(AppDelegate.setLang(_:)), target: target,
-        repr: l.code, state: saved == l.code ? .on : .off)
-  }
-  row(settings, tr("Language")).submenu = langMenu
-
-  if #available(macOS 13.0, *) {
-    row(settings, tr("Start at login"),
-        action: #selector(AppDelegate.toggleLoginItem), target: target,
-        state: target.loginItemEnabled ? .on : .off)
-  }
-  settings.addItem(.separator())
-  if snap.block != nil {
-    row(settings, tr("Open ccusage dashboard"), action: #selector(AppDelegate.openDashboard), target: target)
-  }
-  row(settings, tr("Open GitHub page"),
-      action: #selector(AppDelegate.openLink(_:)), target: target, repr: REPO_URL)
-  settings.addItem(.separator())
-  row(settings, "v\(APP_VERSION) · Claude & Codex Usage Battery", size: 11, color: GRAY)
-  row(menu, tr("Settings")).submenu = settings
+  row(menu, tr("Settings"), action: #selector(AppDelegate.showSettings), target: target)
 
   menu.addItem(.separator())
   menu.addItem(NSMenuItem(title: tr("Quit"),
