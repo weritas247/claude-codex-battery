@@ -158,6 +158,7 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate) -> NSMe
   row(displayMenu, tr("Modern batteries"), action: #selector(AppDelegate.setDisplayMode(_:)), target: target,
       repr: "modern", state: displayMode == "modern" ? .on : .off)
   row(settings, tr("Display style")).submenu = displayMenu
+  row(settings, tr("Menu bar items…"), action: #selector(AppDelegate.showMetricSettings), target: target)
 
   let catMenu = NSMenu()
   let curCat = currentCatStyle()

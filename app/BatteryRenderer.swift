@@ -52,6 +52,10 @@ private let PRESET_SMALL = Preset(font: FONT35, adv: { _ in 4 },
 
 let SIZE_FILE = "\(STATE_DIR)/.batt-size"
 let DISPLAY_MODE_KEY = "displayMode"
+private let METRIC_VISIBILITY_DEFAULTS: [String: Bool] = [
+  "claude5": true, "claudeWeek": true, "claudeFable": false,
+  "codex5": true, "codexWeek": true,
+]
 func currentBattSize() -> String {
   let s = (try? String(contentsOfFile: SIZE_FILE, encoding: .utf8))?
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -60,6 +64,13 @@ func currentBattSize() -> String {
 
 func currentDisplayMode() -> String {
   UserDefaults.standard.string(forKey: DISPLAY_MODE_KEY) == "pixel" ? "pixel" : "modern"
+}
+
+func isMetricVisible(_ key: String) -> Bool {
+  if UserDefaults.standard.object(forKey: "visible_\(key)") == nil {
+    return METRIC_VISIBILITY_DEFAULTS[key] ?? true
+  }
+  return UserDefaults.standard.bool(forKey: "visible_\(key)")
 }
 
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)

@@ -29,18 +29,18 @@ func collectSnapshot() -> Snapshot {
 func battItems(_ snap: Snapshot) -> [BattItem] {
   var items: [BattItem] = []
   if let u = snap.usage {
-    items.append(BattItem(label: "C5", remain: u.fiveHour.map { max(0, 100 - $0.pct) }))
-    items.append(BattItem(label: "CW", remain: u.weekly.map { max(0, 100 - $0.pct) }))
-    if let f = u.fable { items.append(BattItem(label: "CF", remain: max(0, 100 - f.pct))) }
-  } else if let b = snap.block {
+    if isMetricVisible("claude5") { items.append(BattItem(label: "C5", remain: u.fiveHour.map { max(0, 100 - $0.pct) })) }
+    if isMetricVisible("claudeWeek") { items.append(BattItem(label: "CW", remain: u.weekly.map { max(0, 100 - $0.pct) })) }
+    if isMetricVisible("claudeFable"), let f = u.fable { items.append(BattItem(label: "CF", remain: max(0, 100 - f.pct))) }
+  } else if let b = snap.block, isMetricVisible("claude5") {
     items.append(BattItem(label: "C5", remain: max(0, 100 - b.elapsedPct)))
   }
   if let cx = snap.codex, cx.primary != nil || cx.secondary != nil {
     // Only draws whichever window is active at the time — a missing window is omitted rather than shown as an empty capsule
-    if let p = windowState(cx.primary, now: snap.now) {
+    if isMetricVisible("codex5"), let p = windowState(cx.primary, now: snap.now) {
       items.append(BattItem(label: "X5", remain: max(0, 100 - p.pct)))
     }
-    if let s = windowState(cx.secondary, now: snap.now) {
+    if isMetricVisible("codexWeek"), let s = windowState(cx.secondary, now: snap.now) {
       items.append(BattItem(label: "XW", remain: max(0, 100 - s.pct)))
     }
   } else if let cr = snap.codex?.credits {
@@ -329,6 +329,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   @objc func setDisplayMode(_ sender: NSMenuItem) {
     guard let mode = sender.representedObject as? String else { return }
     UserDefaults.standard.set(mode, forKey: DISPLAY_MODE_KEY)
+    rerender()
+  }
+
+  @objc func showMetricSettings() {
+    let alert = NSAlert()
+    alert.messageText = tr("Menu bar items")
+    alert.informativeText = tr("Choose which limits appear in the menu bar. Detailed menu information stays available.")
+    let stack = NSStackView()
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = 8
+    let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"),
+                                        ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"),
+                                        ("codexWeek", "Codex week")]
+    var buttons: [(String, NSButton)] = []
+    for (key, title) in choices {
+      let button = NSButton(checkboxWithTitle: tr(title), target: nil, action: nil)
+      button.state = isMetricVisible(key) ? .on : .off
+      stack.addArrangedSubview(button)
+      buttons.append((key, button))
+    }
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    alert.accessoryView = stack
+    alert.addButton(withTitle: tr("OK")); alert.addButton(withTitle: tr("Cancel"))
+    NSApp.activate(ignoringOtherApps: true)
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    for (key, button) in buttons { UserDefaults.standard.set(button.state == .on, forKey: "visible_\(key)") }
     rerender()
   }
 
