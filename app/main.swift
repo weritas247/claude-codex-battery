@@ -335,50 +335,69 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   @objc func showSettings() {
     if let window = settingsWindow { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 560),
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
     window.title = tr("Settings")
     window.isReleasedWhenClosed = false
     window.delegate = self
-    let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 14
-    root.translatesAutoresizingMaskIntoConstraints = false
-    let content = NSView(); content.addSubview(root); window.contentView = content
+    let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
+    let content = NSView(); content.addSubview(tabs); window.contentView = content
     NSLayoutConstraint.activate([
-      root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-      root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
-      root.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-      root.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24)
+      tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+      tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+      tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+      tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18)
     ])
-    func heading(_ text: String) {
-      let label = NSTextField(labelWithString: text); label.font = .boldSystemFont(ofSize: 14); root.addArrangedSubview(label)
+    func page(_ title: String, icon: String) -> (NSTabViewItem, NSStackView) {
+      let view = NSView(); let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16; stack.translatesAutoresizingMaskIntoConstraints = false
+      view.addSubview(stack)
+      NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28), stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 24), stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -24)])
+      let item = NSTabViewItem(identifier: title); item.view = view; item.label = title; item.image = NSImage(systemSymbolName: icon, accessibilityDescription: title); tabs.addTabViewItem(item)
+      return (item, stack)
     }
     func popup(_ items: [String], selected: Int, action: Selector) -> NSPopUpButton {
       let p = NSPopUpButton(); p.addItems(withTitles: items); p.selectItem(at: selected); p.target = self; p.action = action; p.widthAnchor.constraint(equalToConstant: 230).isActive = true; return p
     }
-    heading(tr("Appearance"))
+    func heading(_ stack: NSStackView, _ text: String) { let label = NSTextField(labelWithString: text); label.font = .boldSystemFont(ofSize: 17); stack.addArrangedSubview(label) }
+    func separator(_ stack: NSStackView) { let box = NSBox(); box.boxType = .separator; box.translatesAutoresizingMaskIntoConstraints = false; box.widthAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true; stack.addArrangedSubview(box) }
+    func note(_ stack: NSStackView, _ text: String) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; stack.addArrangedSubview(label) }
+    func actionButton(_ title: String, _ selector: Selector) -> NSButton { NSButton(title: title, target: self, action: selector) }
+
+    let (_, general) = page(tr("General"), icon: "gearshape")
+    heading(general, tr("General")); note(general, tr("Configure how Claude and Codex usage appears on this Mac.")); separator(general)
+    let langCodes = ["auto"] + LANG_DISPLAY.map { $0.code }; let langTitles = [tr("System default")] + LANG_DISPLAY.map { $0.name }; let savedLang = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
+    let generalGrid = NSGridView(views: [[NSTextField(labelWithString: tr("Language")), popup(langTitles, selected: langCodes.firstIndex(of: savedLang) ?? 0, action: #selector(settingsLanguageChanged(_:)))]]); generalGrid.rowSpacing = 12; generalGrid.columnSpacing = 24; general.addArrangedSubview(generalGrid)
+    if #available(macOS 13.0, *) { let login = NSButton(checkboxWithTitle: tr("Start at login"), target: self, action: #selector(toggleLoginItem)); login.state = loginItemEnabled ? .on : .off; general.addArrangedSubview(login) }
+    separator(general); general.addArrangedSubview(NSTextField(labelWithString: "v\(APP_VERSION) · Claude & Codex Usage Battery")); let generalLinks = NSStackView(); generalLinks.orientation = .horizontal; generalLinks.spacing = 10; generalLinks.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings))); general.addArrangedSubview(generalLinks)
+
+    let (_, display) = page(tr("Display"), icon: "paintbrush")
+    heading(display, tr("Appearance")); note(display, tr("Choose the visual style and optional companion shown in the menu bar.")); separator(display)
     let appearance = NSGridView(views: [
       [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
       [NSTextField(labelWithString: tr("Battery size")), popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))],
       [NSTextField(labelWithString: tr("Cat")), popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))],
-    ])
-    appearance.rowSpacing = 10; appearance.columnSpacing = 18; root.addArrangedSubview(appearance)
-    heading(tr("Menu bar items"))
+    ]); appearance.rowSpacing = 14; appearance.columnSpacing = 24; display.addArrangedSubview(appearance)
+
+    let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
+    heading(limits, tr("Menu bar items")); note(limits, tr("Select the limits shown in the compact menu bar indicator. Detailed usage remains available in the dropdown.")); separator(limits)
     let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"), ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"), ("codexWeek", "Codex week")]
-    let metrics = NSStackView(); metrics.orientation = .vertical; metrics.alignment = .leading; metrics.spacing = 7
+    var metricButtons: [NSButton] = []
     for (key, title) in choices {
-      let button = NSButton(checkboxWithTitle: tr(title), target: self, action: #selector(toggleMetric(_:))); button.identifier = NSUserInterfaceItemIdentifier("visible_\(key)"); button.state = isMetricVisible(key) ? .on : .off; metrics.addArrangedSubview(button)
+      let button = NSButton(checkboxWithTitle: tr(title), target: self, action: #selector(toggleMetric(_:))); button.identifier = NSUserInterfaceItemIdentifier("visible_\(key)"); button.state = isMetricVisible(key) ? .on : .off; metricButtons.append(button)
     }
-    root.addArrangedSubview(metrics)
-    heading(tr("General"))
-    let langCodes = ["auto"] + LANG_DISPLAY.map { $0.code }
-    let langTitles = [tr("System default")] + LANG_DISPLAY.map { $0.name }
-    let savedLang = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
-    let general = NSGridView(views: [[NSTextField(labelWithString: tr("Language")), popup(langTitles, selected: langCodes.firstIndex(of: savedLang) ?? 0, action: #selector(settingsLanguageChanged(_:)))]]); general.rowSpacing = 10; general.columnSpacing = 18; root.addArrangedSubview(general)
-    if #available(macOS 13.0, *) { let login = NSButton(checkboxWithTitle: tr("Start at login"), target: self, action: #selector(toggleLoginItem)); login.state = loginItemEnabled ? .on : .off; root.addArrangedSubview(login) }
-    let links = NSStackView(); links.orientation = .horizontal; links.spacing = 10
-    if lastSnap?.block != nil { let cc = NSButton(title: tr("Open ccusage dashboard"), target: self, action: #selector(openDashboard)); links.addArrangedSubview(cc) }
-    let gh = NSButton(title: tr("Open GitHub page"), target: self, action: #selector(openGitHubFromSettings)); links.addArrangedSubview(gh); root.addArrangedSubview(links)
-    let close = NSButton(title: tr("Close"), target: self, action: #selector(closeSettings)); close.keyEquivalent = "\r"; close.controlSize = .large; close.widthAnchor.constraint(equalToConstant: 110).isActive = true; root.addArrangedSubview(close)
+    let metrics = NSGridView(views: [[metricButtons[0], metricButtons[1]], [metricButtons[2], metricButtons[3]], [metricButtons[4], NSView()]])
+    metrics.rowSpacing = 12; metrics.columnSpacing = 55
+    limits.addArrangedSubview(metrics)
+
+    let (_, integration) = page(tr("Integration"), icon: "link")
+    heading(integration, tr("Integrations")); note(integration, tr("Optional tools add cost breakdowns and provide quick access to the project.")); separator(integration)
+    if lastSnap?.block != nil { integration.addArrangedSubview(actionButton(tr("Open ccusage dashboard"), #selector(openDashboard))) }
+    integration.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings)))
+
+    let (_, updates) = page(tr("Updates"), icon: "arrow.clockwise")
+    heading(updates, tr("Updates")); note(updates, tr("The app checks for updates once a day. You can review the source and releases on GitHub.")); separator(updates)
+    updates.addArrangedSubview(NSTextField(labelWithString: "Claude & Codex Usage Battery v\(APP_VERSION)")); updates.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings)))
+
     settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
   }
 
