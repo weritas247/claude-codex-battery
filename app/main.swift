@@ -257,7 +257,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var hatchPhase = 0
   // Counts pixel-icon repaints so a headless test can see the frame the button path would draw
   private(set) var pixelRedrawCount = 0
-  private var pixelTickCount = 0
+  private var lastCatAdvance: CFTimeInterval?
+  private var lastHatchAdvance: CFTimeInterval?
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
 
@@ -269,6 +270,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private let reduceMotionReader: () -> Bool
   private let glintIntervalReader: () -> TimeInterval
   private let visualTimerFactory: VisualTimerFactory
+  private let monotonicClock: () -> CFTimeInterval
   private let allowsHeadlessVisualResources: Bool
   private let motionNotificationCenter: NotificationCenter
   private var motionObserver: NSObjectProtocol?
@@ -307,6 +309,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
        },
        motionNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
        visualTimerFactory: @escaping VisualTimerFactory = scheduledVisualTimer,
+       monotonicClock: @escaping () -> CFTimeInterval = { CACurrentMediaTime() },
        allowsHeadlessVisualResources: Bool = false,
        providerMonitorIdentity: AnyObject? = nil) {
     self.presentationConfiguration = presentationConfiguration
@@ -317,6 +320,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     self.reduceMotionReader = reduceMotionReader
     self.glintIntervalReader = glintIntervalReader
     self.visualTimerFactory = visualTimerFactory
+    self.monotonicClock = monotonicClock
     self.allowsHeadlessVisualResources = allowsHeadlessVisualResources
     self.motionNotificationCenter = motionNotificationCenter
     self.providerMonitorIdentity = providerMonitorIdentity
@@ -516,14 +520,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let hatching = !activeProviders.isEmpty
     guard catStyle != .none || hatching else { return }
     let state = catState(snap, configuration: presentationConfiguration)
-    if catStyle != .none {
-      let ticksPerCatFrame = max(1, Int((catTickInterval(state) / pixelTickInterval(state)).rounded()))
-      if pixelTickCount % ticksPerCatFrame == 0 { catIdx += 1 }
+    let now = monotonicClock()
+    // The tick runs at the faster of the two cadences, so each channel advances on its own clock
+    if catStyle != .none, elapsedSince(lastCatAdvance, now) >= catTickInterval(state) - MOTION_TICK_SLACK {
+      catIdx += 1
+      lastCatAdvance = now
     }
-    if hatching { hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX }
-    pixelTickCount += 1
+    if hatching, elapsedSince(lastHatchAdvance, now) >= HATCH_TICK_INTERVAL - MOTION_TICK_SLACK {
+      hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX
+      lastHatchAdvance = now
+    }
     // Advance the frame state first, then redraw only when there is a button (headless-verifiable)
     redrawPixelIcon()
+  }
+
+  // Never advanced yet → treat as overdue so the first tick after a start draws a frame
+  private func elapsedSince(_ last: CFTimeInterval?, _ now: CFTimeInterval) -> CFTimeInterval {
+    guard let last else { return .infinity }
+    return now - last
   }
 
   // Draw the pixel icon at the current motion state (cat frame + hatch phase)
@@ -1818,6 +1832,7 @@ private func runCoreSelfTest() throws {
   let tickFlag = CoreSelfTestFlag(false)
   let tickMode = CoreSelfTestBox("pixel")
   let tickCat = CoreSelfTestBox(CatStyle.none)
+  let tickClock = CoreSelfTestBox(CFTimeInterval(0))
   let tickConfiguration = PresentationConfiguration(
     isMetricVisible: { _ in true }, displayMode: { tickMode.value },
     catStyle: { tickCat.value }, batterySize: { "big" },
@@ -1830,6 +1845,7 @@ private func runCoreSelfTest() throws {
     assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
     reduceMotionReader: { tickFlag.value }, glintIntervalReader: { 30 },
     motionNotificationCenter: NotificationCenter(), visualTimerFactory: tickFactory.make,
+    monotonicClock: { tickClock.value },
     allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
   tickDelegate.menuSink = { _ in }
   tickDelegate.staticOutputSink = { _ in }
@@ -1854,6 +1870,7 @@ private func runCoreSelfTest() throws {
   tickFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
   let phaseBefore = tickDelegate.hatchPhase
   tickDelegate.pixelMotionTick()
+  tickClock.value += HATCH_TICK_INTERVAL
   tickDelegate.pixelMotionTick()
   try require(tickDelegate.hatchPhase == (phaseBefore + 2) % HATCH_PITCH_PX,
               "drain-hatch", "tick-advances-phase",
@@ -1870,12 +1887,15 @@ private func runCoreSelfTest() throws {
                 && tickDelegate.pixelRedrawCount == redrawsBeforeIdle + 1,
               "drain-hatch", "deactivation-redraws-pixel-icon",
               "the last provider going idle left the hatched frame frozen on the icon")
-  // 고양이는 자신의 속도를 유지해야 한다 — hatch가 tick을 0.2s로 강제해도 매 tick마다 진행하면 안 된다
+  // Each channel holds its own cadence — the shared tick runs at the faster of the two, so neither
+  // the cat nor the hatch may advance on every tick
   let throttleMode = CoreSelfTestBox("pixel")
+  let throttleCat = CoreSelfTestBox(CatState.sleep)
+  let throttleClock = CoreSelfTestBox(CFTimeInterval(0))
   let throttleConfiguration = PresentationConfiguration(
     isMetricVisible: { _ in true }, displayMode: { throttleMode.value },
     catStyle: { .nyan }, batterySize: { "big" },
-    goldTestEnabled: { false }, forcedCatState: { .sleep }, language: { "en" })
+    goldTestEnabled: { false }, forcedCatState: { throttleCat.value }, language: { "en" })
   let throttleFactory = CoreSelfTestVisualTimerFactory()
   var throttleCompletions: [(Snapshot) -> Void] = []
   let throttleDelegate = AppDelegate(
@@ -1884,6 +1904,7 @@ private func runCoreSelfTest() throws {
     assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
     reduceMotionReader: { false }, glintIntervalReader: { 30 },
     motionNotificationCenter: NotificationCenter(), visualTimerFactory: throttleFactory.make,
+    monotonicClock: { throttleClock.value },
     allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
   throttleDelegate.menuSink = { _ in }
   throttleDelegate.staticOutputSink = { _ in }
@@ -1893,13 +1914,29 @@ private func runCoreSelfTest() throws {
   throttleDelegate.apiActiveProviders = [.claude]
   throttleDelegate.updateActivityAnimation()
   throttleFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
+  // .sleep: the hatch forces a 0.2s tick, but the cat frame only turns over on its own 1.0s
   let catIdxBefore = throttleDelegate.catIdx
   let hatchPhaseBefore = throttleDelegate.hatchPhase
-  for _ in 0 ..< 5 { throttleDelegate.pixelMotionTick() }
+  for step in 0 ..< 5 {
+    throttleClock.value = Double(step) * HATCH_TICK_INTERVAL
+    throttleDelegate.pixelMotionTick()
+  }
   try require(throttleDelegate.catIdx == catIdxBefore + 1
                 && throttleDelegate.hatchPhase == (hatchPhaseBefore + 5) % HATCH_PITCH_PX,
               "drain-hatch", "cat-cadence-throttled",
               "cat frame advanced on every hatch-forced tick instead of holding its own 1.0s cadence")
+  // .dash: the cat is now the faster channel and the hatch is the one being throttled
+  throttleCat.value = .dash
+  let dashCatIdxBefore = throttleDelegate.catIdx
+  let dashPhaseBefore = throttleDelegate.hatchPhase
+  for step in 0 ..< 5 {
+    throttleClock.value = 1.0 + Double(step) * catTickInterval(.dash)
+    throttleDelegate.pixelMotionTick()
+  }
+  try require(throttleDelegate.catIdx == dashCatIdxBefore + 5
+                && throttleDelegate.hatchPhase == (dashPhaseBefore + 3) % HATCH_PITCH_PX,
+              "drain-hatch", "hatch-cadence-throttled",
+              "hatch phase advanced on every cat-forced tick instead of holding its own 0.2s cadence")
 
   // ── drain hatch: 모던 모드 레이어 ──
   // Note: local names prefixed hatchMode* (not modern*) — a `modernConfiguration` from

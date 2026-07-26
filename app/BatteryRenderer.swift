@@ -253,6 +253,9 @@ let HATCH_PERIOD: CFTimeInterval = 0.6
 let HATCH_PITCH_PX = 3            // pixel canvas is in logical px (Canvas.SCALE doubles it)
 let HATCH_STRIPE_PX = 1
 let HATCH_TICK_INTERVAL: TimeInterval = 0.2   // one logical px per tick → a full pitch in HATCH_PERIOD
+// Timer callbacks fire a hair early as often as late; without this slack a 0.199s gap would defer
+// a channel's advance to the next tick and stretch its period by a whole tick.
+let MOTION_TICK_SLACK: TimeInterval = 0.005
 
 // Fraction of the capsule interior the fill needs before the stripes can run inside it (modern:
 // 6pt of a 34pt interior). Tied to the interior so both modes fall back at the same remaining
