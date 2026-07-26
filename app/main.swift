@@ -547,7 +547,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     if hatching, elapsedSince(lastHatchAdvance, now) >= HATCH_TICK_INTERVAL - MOTION_TICK_SLACK {
       hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX
-      lastHatchAdvance = now
+      // Count from the due time, not from now, so a tick cadence that isn't a divisor of
+      // HATCH_TICK_INTERVAL still averages out to the spec'd 0.60s period. More than a full
+      // interval behind means the timer was stopped — re-base instead of drifting fast to catch up.
+      let due = lastHatchAdvance.map { $0 + HATCH_TICK_INTERVAL } ?? now
+      lastHatchAdvance = now - due >= HATCH_TICK_INTERVAL ? now : due
     }
     // Advance the frame state first, then redraw only when there is a button (headless-verifiable)
     redrawPixelIcon()
@@ -1953,16 +1957,18 @@ private func runCoreSelfTest() throws {
                 && throttleDelegate.hatchPhase == (hatchPhaseBefore + 5) % HATCH_PITCH_PX,
               "drain-hatch", "cat-cadence-throttled",
               "cat frame advanced on every hatch-forced tick instead of holding its own 1.0s cadence")
-  // .dash: the cat is now the faster channel and the hatch is the one being throttled
+  // .dash: the cat is now the faster channel and the hatch is the one being throttled. 0.2s is not
+  // a multiple of the 0.12s tick, so the hatch has to catch up to keep its 0.60s period: 10 ticks
+  // span 1.08s and must carry 6 phase steps (5 would be the 0.72s period of a drifting cadence).
   throttleCat.value = .dash
   let dashCatIdxBefore = throttleDelegate.catIdx
   let dashPhaseBefore = throttleDelegate.hatchPhase
-  for step in 0 ..< 5 {
+  for step in 0 ..< 10 {
     throttleClock.value = 1.0 + Double(step) * catTickInterval(.dash)
     throttleDelegate.pixelMotionTick()
   }
-  try require(throttleDelegate.catIdx == dashCatIdxBefore + 5
-                && throttleDelegate.hatchPhase == (dashPhaseBefore + 3) % HATCH_PITCH_PX,
+  try require(throttleDelegate.catIdx == dashCatIdxBefore + 10
+                && throttleDelegate.hatchPhase == (dashPhaseBefore + 6) % HATCH_PITCH_PX,
               "drain-hatch", "hatch-cadence-throttled",
               "hatch phase advanced on every cat-forced tick instead of holding its own 0.2s cadence")
 
@@ -2007,7 +2013,12 @@ private func runCoreSelfTest() throws {
   // at exactly the rect renderModernSummaryImage put it in
   let label = hatchModeDelegate.activityTextLayers[.claude]
   let labelCenterX = MODERN_IMAGE_PAD + MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH / 2
-  try require(label?.contents != nil && (label?.frame.width ?? 0) > 0
+  func textImageHasInk(_ value: Double) -> Bool {
+    guard let text = modernValueTextImage(value, dark: true),
+          let pixels = text.image.dataProvider?.data else { return false }
+    return (pixels as Data).contains { $0 != 0 }
+  }
+  try require(label?.contents != nil && (label?.frame.width ?? 0) > 0 && textImageHasInk(50)
                 && label?.frame.minY == clip?.frame.minY
                 && abs((label?.frame.midX ?? 0) - labelCenterX) < 0.001,
               "drain-hatch", "modern-text-layer-installed",
