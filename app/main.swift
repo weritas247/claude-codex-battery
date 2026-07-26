@@ -255,6 +255,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var activityLayers: [Provider: CALayer] = [:]
   var catIdx = 0
   var hatchPhase = 0
+  // Counts pixel-icon repaints so a headless test can see the frame the button path would draw
+  private(set) var pixelRedrawCount = 0
   private var pixelTickCount = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
@@ -424,9 +426,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func updateActivityAnimation() {
     activeProviders = apiActiveProviders.union(sessionActiveProviders)
     updateActivityLayers()
-    if presentationConfiguration.displayMode() != "modern", let snap = lastSnap {
-      restartPixelMotionTimer(catState(snap, configuration: presentationConfiguration))
+    guard presentationConfiguration.displayMode() != "modern", let snap = lastSnap else { return }
+    // Going idle stops the motion timer below, so no later tick would drop the stripes — without
+    // this the last hatched frame sits in the menu bar until the next REFRESH_SECONDS render.
+    if activeProviders.isEmpty {
+      hatchPhase = 0
+      redrawPixelIcon()
     }
+    restartPixelMotionTimer(catState(snap, configuration: presentationConfiguration))
   }
 
   func updateActivityLayers() {
@@ -515,15 +522,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     if hatching { hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX }
     pixelTickCount += 1
-    // 프레임 상태를 먼저 진행시키고, 그릴 버튼이 있을 때만 다시 그린다 (헤드리스 검증 가능)
+    // Advance the frame state first, then redraw only when there is a button (headless-verifiable)
+    redrawPixelIcon()
+  }
+
+  // Draw the pixel icon at the current motion state (cat frame + hatch phase)
+  func redrawPixelIcon() {
+    guard let snap = lastSnap else { return }
+    pixelRedrawCount += 1
     guard let button = statusItem?.button else { return }
     let items = battItems(snap, configuration: presentationConfiguration)
     guard !items.isEmpty else { return }
+    let catStyle = presentationConfiguration.catStyle()
     let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     if let image = renderBatteryImage(dark: dark, items: items,
-                                      cat: catStyle == .none ? nil : state,
+                                      cat: catStyle == .none ? nil
+                                        : catState(snap, configuration: presentationConfiguration),
                                       catFrameIndex: catIdx,
-                                      hatchPhase: hatching ? hatchPhase : nil,
+                                      hatchPhase: activeProviders.isEmpty ? nil : hatchPhase,
                                       hatchProviders: activeProviders,
                                       configuration: presentationConfiguration) {
       setButtonImage(image)
@@ -1800,10 +1816,16 @@ private func runCoreSelfTest() throws {
               "pixel motion tick did not advance the hatch phase")
   tickDelegate.apiActiveProviders = []
   tickCat.value = CatStyle.none
+  let redrawsBeforeIdle = tickDelegate.pixelRedrawCount
   tickDelegate.updateActivityAnimation()
   try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
               "drain-hatch", "deactivation-stops-pixel-timer",
               "pixel motion timer survived losing both the cat and every active provider")
+  // The timer stops above, so nothing else would repaint the icon for a whole refresh cycle
+  try require(tickDelegate.hatchPhase == 0
+                && tickDelegate.pixelRedrawCount == redrawsBeforeIdle + 1,
+              "drain-hatch", "deactivation-redraws-pixel-icon",
+              "the last provider going idle left the hatched frame frozen on the icon")
   // 고양이는 자신의 속도를 유지해야 한다 — hatch가 tick을 0.2s로 강제해도 매 tick마다 진행하면 안 된다
   let throttleMode = CoreSelfTestBox("pixel")
   let throttleConfiguration = PresentationConfiguration(
