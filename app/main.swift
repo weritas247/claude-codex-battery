@@ -1787,7 +1787,7 @@ private func runCoreSelfTest() throws {
                 && launchReduced.providerMonitorIdentity === launchMonitor,
               "reduce-motion", "enabled-before-render",
               "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
-  // ── drain hatch: 픽셀 캡슐 빗금 ──
+  // ── drain hatch: pixel capsule stripes ──
   let hatchItems = [BattItem(label: "C5", provider: .claude, remain: 75),
                     BattItem(label: "X5", provider: .codex, remain: 40)]
   func hatchPixels(_ image: NSImage?) -> Data? { image?.tiffRepresentation }
@@ -1856,7 +1856,7 @@ private func runCoreSelfTest() throws {
                 && !hasColor(redHatched, emptyHatchRGB(dark: true)),
               "drain-hatch", "derived-hatch-red-band-pixel",
               "a red-band battery fell back to the flat empty tone instead of a derived hatch")
-  // ── drain hatch: 픽셀 모션 틱 ──
+  // ── drain hatch: pixel motion tick ──
   let tickFlag = CoreSelfTestFlag(false)
   let tickMode = CoreSelfTestBox("pixel")
   let tickCat = CoreSelfTestBox(CatStyle.none)
@@ -1894,7 +1894,7 @@ private func runCoreSelfTest() throws {
                 && tickDelegate.pixelTickInterval(.dash) == 0.12,
               "drain-hatch", "tick-interval-is-fastest",
               "pixel tick interval was not the faster of the cat and hatch cadences")
-  // 최초 리프레시가 인트로 프레임 타이머를 켜 두므로, 틱 가드를 통과하도록 먼저 무효화한다
+  // The first refresh leaves the intro frame timer running — invalidate it so the tick guard passes
   tickFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
   let phaseBefore = tickDelegate.hatchPhase
   tickDelegate.pixelMotionTick()
@@ -1966,7 +1966,7 @@ private func runCoreSelfTest() throws {
               "drain-hatch", "hatch-cadence-throttled",
               "hatch phase advanced on every cat-forced tick instead of holding its own 0.2s cadence")
 
-  // ── drain hatch: 모던 모드 레이어 ──
+  // ── drain hatch: modern mode layers ──
   // Note: local names prefixed hatchMode* (not modern*) — a `modernConfiguration` from
   // conversion-bands-risk above already occupies this flat function scope.
   let hatchModeFlag = CoreSelfTestFlag(false)
