@@ -252,8 +252,15 @@ let HATCH_PITCH_PT: CGFloat = 9
 let HATCH_STRIPE_PT: CGFloat = 3
 let HATCH_PERIOD: CFTimeInterval = 0.6
 
-// Below this the fill is too narrow to carry the stripes — they run over the whole body instead
+// Below this the fill is too narrow to carry the stripes — they run over the whole body instead.
+// Points of the 34pt modern capsule interior.
 let HATCH_MIN_FILL_PT: CGFloat = 6
+
+// Signed on purpose: a 22pt menu bar button is shorter than the 24pt image, and clamping that -1
+// to 0 would lift the stripes a point off the fill they sit inside
+func hatchOriginY(buttonHeight: CGFloat, imageHeight: CGFloat) -> CGFloat {
+  (buttonHeight - imageHeight) / 2
+}
 
 // Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
 func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {

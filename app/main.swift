@@ -450,9 +450,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let buttonWidth = button?.bounds.width ?? imageWidth
     let buttonHeight = button?.bounds.height ?? imageHeight
     let originX = max(0, (buttonWidth - imageWidth) / 2)
-    // Signed: a 22pt menu bar button is shorter than the 24pt image, and clamping that -1 to 0
-    // would lift the stripes a point off the fill they sit inside
-    let originY = (buttonHeight - imageHeight) / 2
+    let originY = hatchOriginY(buttonHeight: buttonHeight, imageHeight: imageHeight)
     let dark = button.map { $0.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } ?? true
 
     for provider in [Provider.claude, .codex] {
@@ -475,7 +473,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       // in place instead of restarting it at t=0 on every icon refresh (setButtonImage runs this
       // every redraw, not only on real activity transitions).
       let signature = "\(rect)|\(colorRGB)|\(alpha)"
-      if activityLayers[provider]?.name == signature, activityTextLayers[provider] != nil { continue }
+      // Centered the way renderModernSummaryImage centers it, so the redraw lands pixel-on-pixel
+      func valueTextFrame(_ size: CGSize) -> CGRect {
+        CGRect(x: bodyX + (MODERN_BODY_WIDTH - size.width) / 2, y: originY + 5,
+               width: size.width, height: size.height)
+      }
+      if activityLayers[provider]?.name == signature, let label = activityTextLayers[provider] {
+        // Below the low-fill threshold the signature is value-independent (constant rect, flat empty
+        // tone), so a draining provider would keep painting its old number over the new base image.
+        // Refresh the label in place; the clip and its running "drain" animation stay untouched.
+        // Nil render → keep the previous label, same as the creation path skipping it entirely.
+        if let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark) {
+          CATransaction.begin()
+          CATransaction.setDisableActions(true)   // implicit actions would crossfade the digits
+          label.frame = valueTextFrame(text.size)
+          label.contents = text.image
+          CATransaction.commit()
+        }
+        continue
+      }
       removeActivityLayers(for: provider)
       let color = hatchNSColor(colorRGB, alpha: alpha)
 
@@ -502,14 +518,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       stripes.add(drift, forKey: "drain")
 
       // The clip sits above the button image and would stripe the centered "NN%", so the number is
-      // redrawn on top of it — same rect renderModernSummaryImage used, so it lands pixel-on-pixel.
+      // redrawn on top of it.
       guard let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark) else {
         continue
       }
       let label = CALayer()
       label.name = signature
-      label.frame = CGRect(x: bodyX + (MODERN_BODY_WIDTH - text.size.width) / 2, y: originY + 5,
-                           width: text.size.width, height: text.size.height)
+      label.frame = valueTextFrame(text.size)
       label.contentsScale = 2
       label.contents = text.image
       button?.layer?.addSublayer(label)
@@ -1862,6 +1877,40 @@ private func runCoreSelfTest() throws {
                 && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: true))") == true,
               "drain-hatch", "low-fill-fallback-modern",
               "an empty battery did not hatch the whole body in the empty tone")
+  // Below the threshold the signature is value-independent, so the reuse path is what a draining
+  // provider actually takes — the label has to be refreshed in place there, without the layer
+  // teardown that a widened signature would cause (that would reset the drift to t=0).
+  func hatchLabelProbe() -> (width: CGFloat, pixels: Int)? {
+    // CFTypeID rather than `as?` — a conditional downcast to a CF type always succeeds, so a
+    // non-image `contents` would crash the probe instead of failing the assertion below
+    guard let label = hatchModeDelegate.activityTextLayers[.claude],
+          let contents = label.contents,
+          CFGetTypeID(contents as CFTypeRef) == CGImage.typeID else { return nil }
+    return (label.frame.width, (contents as! CGImage).width)
+  }
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[4](hatchModeSnapshot(remaining: 15))
+  let labelFifteen = hatchModeDelegate.activityTextLayers[.claude]
+  let probeFifteen = hatchLabelProbe()
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[5](hatchModeSnapshot(remaining: 5))
+  let clipDraining = hatchModeDelegate.activityLayers[.claude]
+  let probeFive = hatchLabelProbe()
+  try require(probeFifteen != nil && probeFive != nil
+                && probeFifteen! != probeFive!
+                && labelFifteen != nil
+                && ObjectIdentifier(labelFifteen!) == ObjectIdentifier(hatchModeDelegate.activityTextLayers[.claude]!)
+                && clipEmpty != nil && clipDraining != nil
+                && ObjectIdentifier(clipEmpty!) == ObjectIdentifier(clipDraining!)
+                && clipDraining?.sublayers?.first?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-text-refreshed-on-reuse",
+              "a provider draining below the threshold kept the stale percentage over the new image")
+  // Nothing else pins the signed vertical origin: the headless harness has no button, so
+  // buttonHeight == imageHeight there and the -1 of a real 22pt menu bar button never appears
+  try require(hatchOriginY(buttonHeight: 22, imageHeight: MODERN_IMAGE_HEIGHT) == -1
+                && hatchOriginY(buttonHeight: MODERN_IMAGE_HEIGHT, imageHeight: MODERN_IMAGE_HEIGHT) == 0,
+              "drain-hatch", "signed-origin-y",
+              "a button shorter than the image did not push the hatch origin negative")
   hatchModeFlag.value = true
   // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
   // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
