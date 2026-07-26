@@ -1763,6 +1763,36 @@ private func runCoreSelfTest() throws {
   try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
               "drain-hatch", "deactivation-stops-pixel-timer",
               "pixel motion timer survived losing both the cat and every active provider")
+  // 고양이는 자신의 속도를 유지해야 한다 — hatch가 tick을 0.2s로 강제해도 매 tick마다 진행하면 안 된다
+  let throttleMode = CoreSelfTestBox("pixel")
+  let throttleConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { throttleMode.value },
+    catStyle: { .nyan }, batterySize: { "big" },
+    goldTestEnabled: { false }, forcedCatState: { .sleep }, language: { "en" })
+  let throttleFactory = CoreSelfTestVisualTimerFactory()
+  var throttleCompletions: [(Snapshot) -> Void] = []
+  let throttleDelegate = AppDelegate(
+    presentationConfiguration: throttleConfiguration,
+    collector: { throttleCompletions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { false }, glintIntervalReader: { 30 },
+    motionNotificationCenter: NotificationCenter(), visualTimerFactory: throttleFactory.make,
+    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
+  throttleDelegate.menuSink = { _ in }
+  throttleDelegate.staticOutputSink = { _ in }
+  throttleDelegate.accessibilitySummarySink = { _ in }
+  throttleDelegate.requestRefresh(.initial)
+  throttleCompletions[0](snapshot)
+  throttleDelegate.apiActiveProviders = [.claude]
+  throttleDelegate.updateActivityAnimation()
+  throttleFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
+  let catIdxBefore = throttleDelegate.catIdx
+  let hatchPhaseBefore = throttleDelegate.hatchPhase
+  for _ in 0 ..< 5 { throttleDelegate.pixelMotionTick() }
+  try require(throttleDelegate.catIdx == catIdxBefore + 1
+                && throttleDelegate.hatchPhase == (hatchPhaseBefore + 5) % HATCH_PITCH_PX,
+              "drain-hatch", "cat-cadence-throttled",
+              "cat frame advanced on every hatch-forced tick instead of holding its own 1.0s cadence")
   print("self-test-core: drain-hatch PASS")
 
   print("self-test-core: reduce-motion PASS")
