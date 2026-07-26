@@ -3,3 +3,5 @@
 .codex-refresh-ts
 windows/build/
 windows/*.exe
+.claude/
+.superpowers/
