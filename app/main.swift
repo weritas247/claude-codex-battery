@@ -379,13 +379,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
   }
 
-  private func stopVisualMotion() {
+  // Timers/epoch only — every refresh needs a fresh epoch, but a refresh alone must not reset
+  // an unchanged provider's running "drain" animation, so activity layers are handled separately.
+  private func invalidateVisualTimers() {
     motionEpoch += 1
     animTimer?.invalidate(); animTimer = nil
     catTimer?.invalidate(); catTimer = nil
     glintTimer?.invalidate(); glintTimer = nil
+  }
+
+  private func clearActivityLayers() {
     activityLayers.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
     activityLayers.removeAll()
+  }
+
+  private func stopVisualMotion() {
+    invalidateVisualTimers()
+    clearActivityLayers()
   }
 
   @objc func applyReduceMotionPreference() {
@@ -733,9 +743,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func prepareAndApplyCurrent(_ snapshot: Snapshot) {
-    // A re-presentation is a new visual epoch. Invalidate every callback and layer
-    // before reading mutable presentation configuration or installing new output.
-    stopVisualMotion()
+    // A re-presentation is a new visual epoch. Invalidate every timer callback before reading
+    // mutable presentation configuration or installing new output — but leave activity layers
+    // alone here; applyEligibleMotion reconciles them below without resetting an unchanged
+    // provider's running "drain" animation on every ordinary refresh.
+    invalidateVisualTimers()
     let dark = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     let next = preparePresentation(snapshot, dark: dark, swiftBarDuplicate: duplicateReader(),
                                    assets: assetContextFactory())
@@ -770,12 +782,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   private func applyEligibleMotion(_ output: PreparedPresentation, dark: Bool) {
     guard !reduceMotionEnabled, statusItem != nil || allowsHeadlessVisualResources,
-          output.hasDisplayData else { return }
+          output.hasDisplayData else {
+      // Ineligible (reduce motion, no button, or nothing to show) — updateActivityLayers() is
+      // never reached below to reconcile, so any stale hatch layers must be cleared explicitly.
+      clearActivityLayers()
+      return
+    }
     let modern = presentationConfiguration.displayMode() == "modern"
     if modern {
       updateActivityLayers()
       return
     }
+    // Pixel mode doesn't use activity layers — drop any left over from a prior modern presentation.
+    clearActivityLayers()
     startGlintTimer()
     restartPixelMotionTimer(output.catState)
     var frames: [NSImage] = []
@@ -1878,6 +1897,18 @@ private func runCoreSelfTest() throws {
                 && clipRecreated?.sublayers?.first?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-layer-recreated-on-activate",
               "hatch layer identity survived an idle/active cycle instead of rebuilding")
+  // A full refresh cycle (prepareAndApplyCurrent → applyEligibleMotion) on an unchanged modern
+  // presentation is the real regression site — stopVisualMotion() used to wipe layers here on
+  // every refresh regardless of the reuse check above.
+  hatchModeDelegate.requestRefresh(.timer)
+  hatchModeCompletions[1](snapshot)
+  let clipAfterRefresh = hatchModeDelegate.activityLayers[.claude]
+  let stripesAfterRefresh = clipAfterRefresh?.sublayers?.first
+  try require(clipRecreated != nil && clipAfterRefresh != nil
+                && ObjectIdentifier(clipRecreated!) == ObjectIdentifier(clipAfterRefresh!)
+                && stripesAfterRefresh?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-survives-refresh",
+              "a full refresh cycle on an unchanged presentation reset the running drain animation")
   hatchModeFlag.value = true
   // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
   // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
