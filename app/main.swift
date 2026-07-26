@@ -1660,6 +1660,33 @@ private func runCoreSelfTest() throws {
                 && launchReduced.providerMonitorIdentity === launchMonitor,
               "reduce-motion", "enabled-before-render",
               "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
+  // ── drain hatch: 픽셀 캡슐 빗금 ──
+  let hatchItems = [BattItem(label: "C5", provider: .claude, remain: 75),
+                    BattItem(label: "X5", provider: .codex, remain: 40)]
+  func hatchPixels(_ image: NSImage?) -> Data? { image?.tiffRepresentation }
+  let hatchPlain = hatchPixels(renderBatteryImage(dark: true, items: hatchItems))
+  let hatchOff = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
+                                                hatchPhase: 0, hatchProviders: []))
+  let hatchZero = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
+                                                 hatchPhase: 0, hatchProviders: [.claude]))
+  let hatchOne = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
+                                                hatchPhase: 1, hatchProviders: [.claude]))
+  try require(hatchPlain != nil && hatchPlain == hatchOff,
+              "drain-hatch", "inactive-render-unchanged",
+              "hatch parameters with no active provider changed the rendered image")
+  try require(hatchZero != nil && hatchZero != hatchPlain && hatchZero != hatchOne,
+              "drain-hatch", "phase-advances-pixels",
+              "hatch phase did not change the rendered pixels")
+  try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
+                && emptyHatchRGB(dark: true) == (95, 95, 95)
+                && emptyHatchRGB(dark: false) == (190, 190, 190),
+              "drain-hatch", "derived-colors",
+              "hatch colors were not derived from the remaining color")
+  try require(MODERN_ITEM_WIDTH == 59,
+              "drain-hatch", "modern-item-width",
+              "modern item width did not match the rendered layout")
+  print("self-test-core: drain-hatch PASS")
+
   print("self-test-core: reduce-motion PASS")
   print("self-test-core: PASS")
 }

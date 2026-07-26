@@ -236,6 +236,36 @@ private func heatRemain(_ band: RemainingBand, dark: Bool) -> RGB {
   }
 }
 
+// Modern layout geometry — shared by the renderer and the activity layers so the two can't drift
+let MODERN_ICON_WIDTH: CGFloat = 13
+let MODERN_ICON_GAP: CGFloat = 5
+let MODERN_BODY_WIDTH: CGFloat = 38
+let MODERN_BODY_HEIGHT: CGFloat = 18
+let MODERN_ITEM_GAP: CGFloat = 7
+let MODERN_IMAGE_PAD: CGFloat = 2
+let MODERN_IMAGE_HEIGHT: CGFloat = 24
+let MODERN_ITEM_WIDTH = MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH + 3
+
+// Drain hatch — 45° stripes drifting right→left over the remaining fill ("this is being used up")
+let HATCH_PITCH_PT: CGFloat = 9
+let HATCH_STRIPE_PT: CGFloat = 3
+let HATCH_PERIOD: CFTimeInterval = 0.6
+let HATCH_PITCH_PX = 3            // pixel canvas is in logical px (Canvas.SCALE doubles it)
+let HATCH_STRIPE_PX = 1
+let HATCH_TICK_INTERVAL: TimeInterval = 0.2   // one logical px per tick → a full pitch in HATCH_PERIOD
+
+// Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
+func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
+  let base = heatRemain(remainingBand(normalizedRemaining(remain ?? 0)), dark: dark)
+  let scale = 0.35
+  return (UInt8((Double(base.r) * scale).rounded()),
+          UInt8((Double(base.g) * scale).rounded()),
+          UInt8((Double(base.b) * scale).rounded()))
+}
+
+// Used when the fill is too small to carry the hatch — the stripes run over the empty body instead
+func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8) { dark ? (95, 95, 95) : (190, 190, 190) }
+
 // 100% remaining = golden battery (a two-tone gold distinct from the warning yellow)
 func isGolden(_ remain: Double?) -> Bool {
   guard let remain, remain.isFinite else { return false }
@@ -275,7 +305,8 @@ private func numW(_ p: Preset, _ s: String) -> Int { s.reduce(0) { $0 + p.adv($1
 // One capsule: border + remaining-fill + remaining number inside (100 included, always shown)
 // 100% is two-tone gold; when glintX is set, a diagonal glint sweep passes over the gold capsule
 private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
-                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?) {
+                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?,
+                         _ hatchPhase: Int?) {
   let by = midY - p.bh / 2
   cv.stroke(x, by, p.bw, p.bh, ink)
   cv.rect(x + p.bw, by + 3, 2, p.bh - 6, ink) // terminal
@@ -299,6 +330,19 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
       if gx >= x + 2, gx < x + 2 + fw {
         cv.set(gx, by + 2 + j, (255, 255, 240))
         if gx + 1 < x + 2 + fw { cv.set(gx + 1, by + 2 + j, (255, 240, 170)) }
+      }
+    }
+  }
+  // Drain hatch — skipped while the golden glint sweep owns the capsule
+  if let phase = hatchPhase, !(golden && glintX != nil) {
+    let wide = fw >= 6
+    let hatchW = wide ? fw : p.bw - 4
+    let col = wide ? activityHatchRGB(remain, dark: dark) : emptyHatchRGB(dark: dark)
+    for j in 0 ..< (p.bh - 4) {
+      for i in 0 ..< hatchW {
+        let px = x + 2 + i, py = by + 2 + j
+        let d = (((px - py + phase) % HATCH_PITCH_PX) + HATCH_PITCH_PX) % HATCH_PITCH_PX
+        if d < HATCH_STRIPE_PX { cv.set(px, py, col) }
       }
     }
   }
@@ -329,6 +373,7 @@ private func drawCat(_ cv: Canvas, _ x: Int, _ y: Int, _ style: CatStyle, _ stat
 // With `cat`, a pixel cat runs at the left edge, facing its battery "finish line".
 func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
                         cat: CatState? = nil, catFrameIndex: Int = 0,
+                        hatchPhase: Int? = nil, hatchProviders: Set<Provider> = [],
                         configuration: PresentationConfiguration = .production) -> NSImage? {
   let p = configuration.batterySize() == "small" ? PRESET_SMALL : PRESET_BIG
   let ink: RGB = dark ? (235, 235, 235) : (45, 45, 45)
@@ -362,7 +407,8 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
       x += numW(p, String(g)) + p.lblgap
       pg = g
     } else { x += p.gap }
-    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX)
+    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX,
+                hatchProviders.contains(item.provider) ? hatchPhase : nil)
     x += p.capw
   }
   guard let provider = CGDataProvider(data: Data(cv.buf) as CFData),
@@ -380,12 +426,15 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
 func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
                               assetContext: ProviderAssetContext = .production()) -> NSImage? {
   guard !summaries.isEmpty else { return nil }
-  let iconWidth: CGFloat = 13, iconGap: CGFloat = 5, bodyW: CGFloat = 38, bodyH: CGFloat = 18, itemGap: CGFloat = 7
-  let itemW = iconWidth + iconGap + bodyW + 3
-  let image = NSImage(size: NSSize(width: ceil(4 + CGFloat(summaries.count) * itemW + CGFloat(summaries.count - 1) * itemGap), height: 24))
+  let iconWidth = MODERN_ICON_WIDTH, iconGap = MODERN_ICON_GAP
+  let bodyW = MODERN_BODY_WIDTH, bodyH = MODERN_BODY_HEIGHT, itemGap = MODERN_ITEM_GAP
+  let itemW = MODERN_ITEM_WIDTH
+  let image = NSImage(size: NSSize(width: ceil(MODERN_IMAGE_PAD * 2 + CGFloat(summaries.count) * itemW
+                                               + CGFloat(summaries.count - 1) * itemGap),
+                                   height: MODERN_IMAGE_HEIGHT))
   image.lockFocus()
   let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
-  var x: CGFloat = 2
+  var x: CGFloat = MODERN_IMAGE_PAD
   for (index, summary) in summaries.enumerated() {
     let bodyX = x + iconWidth + iconGap
     let rect = NSRect(x: bodyX, y: 3, width: bodyW, height: bodyH)
