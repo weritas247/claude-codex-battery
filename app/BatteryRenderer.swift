@@ -232,7 +232,8 @@ private func heatRemain(_ band: RemainingBand, dark: Bool) -> RGB {
   switch band {
   case .red: return dark ? (255, 69, 58) : (255, 59, 48) // systemRed
   case .amber: return dark ? (255, 214, 10) : (255, 204, 0) // systemYellow
-  case .green: return dark ? (91, 177, 111) : (96, 176, 113) // muted sage green
+  // Dark menu bar draws the value in white, so the fill goes deeper for contrast; light keeps it bright
+  case .green: return dark ? (25, 133, 50) : (42, 176, 70) // vivid green
   }
 }
 

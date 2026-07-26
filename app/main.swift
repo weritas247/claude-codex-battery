@@ -1758,7 +1758,7 @@ private func runCoreSelfTest() throws {
   print("self-test-core: reduce-motion PASS")
 
   // ── drain hatch: derived colors and shared modern geometry ──
-  try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
+  try require(activityHatchRGB(75, dark: true) == (9, 47, 18)
                 && emptyHatchRGB(dark: true) == (95, 95, 95)
                 && emptyHatchRGB(dark: false) == (190, 190, 190),
               "drain-hatch", "derived-colors",
