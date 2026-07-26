@@ -266,6 +266,35 @@ func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
 // Used when the fill is too small to carry the hatch — the stripes run over the empty body instead
 func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8) { dark ? (95, 95, 95) : (190, 190, 190) }
 
+// One period-aligned strip of 45° stripes: translating it left by exactly HATCH_PITCH_PT looks seamless
+func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImage? {
+  let scale: CGFloat = 2
+  let pw = Int((width * scale).rounded()), ph = Int((height * scale).rounded())
+  guard pw > 0, ph > 0,
+        let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+  else { return nil }
+  ctx.scaleBy(x: scale, y: scale)
+  ctx.setFillColor(color.cgColor)
+  var x = -height - HATCH_PITCH_PT
+  while x < width + HATCH_PITCH_PT {
+    ctx.move(to: CGPoint(x: x, y: 0))
+    ctx.addLine(to: CGPoint(x: x + HATCH_STRIPE_PT, y: 0))
+    ctx.addLine(to: CGPoint(x: x + HATCH_STRIPE_PT + height, y: height))
+    ctx.addLine(to: CGPoint(x: x + height, y: height))
+    ctx.closePath()
+    ctx.fillPath()
+    x += HATCH_PITCH_PT
+  }
+  return ctx.makeImage()
+}
+
+func hatchNSColor(_ rgb: (UInt8, UInt8, UInt8), alpha: CGFloat) -> NSColor {
+  NSColor(calibratedRed: CGFloat(rgb.0) / 255, green: CGFloat(rgb.1) / 255,
+          blue: CGFloat(rgb.2) / 255, alpha: alpha)
+}
+
 // 100% remaining = golden battery (a two-tone gold distinct from the warning yellow)
 func isGolden(_ remain: Double?) -> Bool {
   guard let remain, remain.isFinite else { return false }

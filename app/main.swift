@@ -252,7 +252,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var apiActiveProviders: Set<Provider> = []
   var sessionActiveProviders: Set<Provider> = []
   var activeProviders: Set<Provider> = []
-  var activityLayers: [Provider: CAShapeLayer] = [:]
+  var activityLayers: [Provider: CALayer] = [:]
   var catIdx = 0
   var hatchPhase = 0
   private var pixelTickCount = 0
@@ -430,42 +430,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     button?.wantsLayer = true
     let summaries = providerSummaries(snap, configuration: presentationConfiguration)
     let imageWidth = button?.image?.size.width ?? 0
+    let imageHeight = button?.image?.size.height ?? MODERN_IMAGE_HEIGHT
     let buttonWidth = button?.bounds.width ?? imageWidth
-    let imageOriginX = max(0, (buttonWidth - imageWidth) / 2)
-    let itemWidth: CGFloat = 61
-    let itemGap: CGFloat = 7
+    let buttonHeight = button?.bounds.height ?? imageHeight
+    let originX = max(0, (buttonWidth - imageWidth) / 2)
+    let originY = max(0, (buttonHeight - imageHeight) / 2)
+    let dark = button.map { $0.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } ?? true
 
     for provider in [Provider.claude, .codex] {
+      if let stale = activityLayers.removeValue(forKey: provider) {
+        stale.removeAllAnimations()
+        stale.removeFromSuperlayer()
+      }
       guard activeProviders.contains(provider),
-            let index = summaries.firstIndex(where: { $0.provider == provider }) else {
-        activityLayers.removeValue(forKey: provider)?.removeFromSuperlayer()
-        continue
-      }
-      let iconCenter = CGPoint(x: imageOriginX + 2 + CGFloat(index) * (itemWidth + itemGap) + 6.5,
-                               y: button?.bounds.midY ?? 12)
-      let color = provider == .claude
-        ? NSColor(calibratedRed: 0.92, green: 0.38, blue: 0.20, alpha: 1)
-        : NSColor(calibratedRed: 0.45, green: 0.68, blue: 1.0, alpha: 1)
-      let layer = activityLayers[provider] ?? {
-        let layer = CAShapeLayer()
-        layer.bounds = CGRect(x: 0, y: 0, width: 3, height: 3)
-        layer.path = CGPath(ellipseIn: layer.bounds, transform: nil)
-        layer.fillColor = color.cgColor
-        button?.layer?.addSublayer(layer)
-        activityLayers[provider] = layer
-        return layer
-      }()
-      let path = CGMutablePath()
-      path.addEllipse(in: CGRect(x: iconCenter.x - 7, y: iconCenter.y - 7, width: 14, height: 14))
-      layer.position = CGPoint(x: iconCenter.x + 7, y: iconCenter.y)
-      if layer.animation(forKey: "orbit") == nil {
-        let orbit = CAKeyframeAnimation(keyPath: "position")
-        orbit.path = path
-        orbit.duration = 0.9
-        orbit.repeatCount = .infinity
-        orbit.calculationMode = .paced
-        layer.add(orbit, forKey: "orbit")
-      }
+            let index = summaries.firstIndex(where: { $0.provider == provider }) else { continue }
+      let summary = summaries[index]
+      let itemX = originX + MODERN_IMAGE_PAD + CGFloat(index) * (MODERN_ITEM_WIDTH + MODERN_ITEM_GAP)
+      let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
+      let fillW = max(0, (MODERN_BODY_WIDTH - 4) * normalizedRemaining(summary.remain) / 100)
+      // Too little fill to carry the stripes → run them over the whole body so activity stays visible
+      let wide = fillW >= 8
+      let rect = CGRect(x: bodyX + 2, y: originY + 5,
+                        width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
+      let color = wide ? hatchNSColor(activityHatchRGB(summary.remain, dark: dark), alpha: 0.85)
+                       : hatchNSColor(emptyHatchRGB(dark: dark), alpha: 0.55)
+
+      let clip = CALayer()
+      clip.frame = rect
+      clip.masksToBounds = true
+      clip.cornerRadius = 2.5
+      let stripes = CALayer()
+      stripes.frame = CGRect(x: 0, y: 0, width: rect.width + HATCH_PITCH_PT, height: rect.height)
+      stripes.contentsScale = 2
+      stripes.contents = hatchStripeImage(width: rect.width + HATCH_PITCH_PT,
+                                          height: rect.height, color: color)
+      clip.addSublayer(stripes)
+      button?.layer?.addSublayer(clip)
+      activityLayers[provider] = clip
+
+      let drift = CABasicAnimation(keyPath: "position.x")
+      drift.fromValue = stripes.position.x
+      drift.toValue = stripes.position.x - HATCH_PITCH_PT
+      drift.duration = HATCH_PERIOD
+      drift.repeatCount = .infinity
+      drift.isRemovedOnCompletion = false
+      stripes.add(drift, forKey: "drain")
     }
   }
 
@@ -1793,6 +1802,59 @@ private func runCoreSelfTest() throws {
                 && throttleDelegate.hatchPhase == (hatchPhaseBefore + 5) % HATCH_PITCH_PX,
               "drain-hatch", "cat-cadence-throttled",
               "cat frame advanced on every hatch-forced tick instead of holding its own 1.0s cadence")
+
+  // ── drain hatch: 모던 모드 레이어 ──
+  // Note: local names prefixed hatchMode* (not modern*) — a `modernConfiguration` from
+  // conversion-bands-risk above already occupies this flat function scope.
+  let hatchModeFlag = CoreSelfTestFlag(false)
+  let hatchModeConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" },
+    catStyle: { CatStyle.none }, batterySize: { "big" },
+    goldTestEnabled: { false }, forcedCatState: { nil }, language: { "en" })
+  var hatchModeCompletions: [(Snapshot) -> Void] = []
+  let hatchModeCenter = NotificationCenter()
+  let hatchModeDelegate = AppDelegate(
+    presentationConfiguration: hatchModeConfiguration,
+    collector: { hatchModeCompletions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { hatchModeFlag.value }, glintIntervalReader: { 30 },
+    motionNotificationCenter: hatchModeCenter,
+    visualTimerFactory: CoreSelfTestVisualTimerFactory().make,
+    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
+  hatchModeDelegate.menuSink = { _ in }
+  hatchModeDelegate.staticOutputSink = { _ in }
+  hatchModeDelegate.accessibilitySummarySink = { _ in }
+  hatchModeDelegate.requestRefresh(.initial)
+  hatchModeCompletions[0](snapshot)
+  hatchModeDelegate.apiActiveProviders = [.claude]
+  hatchModeDelegate.updateActivityAnimation()
+  let clip = hatchModeDelegate.activityLayers[.claude]
+  let stripes = clip?.sublayers?.first
+  try require(Set(hatchModeDelegate.activityLayers.keys) == [Provider.claude]
+                && clip?.masksToBounds == true
+                && stripes?.contents != nil
+                && stripes?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-installed",
+              "active provider did not get a masked, animated hatch layer")
+  try require((clip?.frame.width ?? 0) > 0 && (clip?.frame.height ?? 0) == 14
+                && (stripes?.frame.width ?? 0) == (clip?.frame.width ?? 0) + HATCH_PITCH_PT,
+              "drain-hatch", "modern-layer-geometry",
+              "hatch layer geometry did not match the battery fill")
+  hatchModeDelegate.apiActiveProviders = []
+  hatchModeDelegate.updateActivityAnimation()
+  try require(hatchModeDelegate.activityLayers.isEmpty,
+              "drain-hatch", "modern-layer-removed",
+              "hatch layer survived the provider going idle")
+  hatchModeFlag.value = true
+  // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
+  // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
+  hatchModeCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  hatchModeDelegate.apiActiveProviders = [.claude, .codex]
+  hatchModeDelegate.updateActivityAnimation()
+  try require(hatchModeDelegate.activityLayers.isEmpty,
+              "drain-hatch", "modern-reduce-motion",
+              "hatch layers were created while Reduce Motion was on")
+
   print("self-test-core: drain-hatch PASS")
 
   print("self-test-core: reduce-motion PASS")
