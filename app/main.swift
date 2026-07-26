@@ -257,11 +257,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   // The percentage redrawn above the hatch — created, reused and torn down with its clip layer
   var activityTextLayers: [Provider: CALayer] = [:]
   var catIdx = 0
-  var hatchPhase = 0
-  // Counts pixel-icon repaints so a headless test can see the frame the button path would draw
-  private(set) var pixelRedrawCount = 0
-  private var lastCatAdvance: CFTimeInterval?
-  private var lastHatchAdvance: CFTimeInterval?
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
 
@@ -273,7 +268,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private let reduceMotionReader: () -> Bool
   private let glintIntervalReader: () -> TimeInterval
   private let visualTimerFactory: VisualTimerFactory
-  private let monotonicClock: () -> CFTimeInterval
   private let allowsHeadlessVisualResources: Bool
   private let motionNotificationCenter: NotificationCenter
   private var motionObserver: NSObjectProtocol?
@@ -312,7 +306,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
        },
        motionNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
        visualTimerFactory: @escaping VisualTimerFactory = scheduledVisualTimer,
-       monotonicClock: @escaping () -> CFTimeInterval = { CACurrentMediaTime() },
        allowsHeadlessVisualResources: Bool = false,
        providerMonitorIdentity: AnyObject? = nil) {
     self.presentationConfiguration = presentationConfiguration
@@ -323,7 +316,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     self.reduceMotionReader = reduceMotionReader
     self.glintIntervalReader = glintIntervalReader
     self.visualTimerFactory = visualTimerFactory
-    self.monotonicClock = monotonicClock
     self.allowsHeadlessVisualResources = allowsHeadlessVisualResources
     self.motionNotificationCenter = motionNotificationCenter
     self.providerMonitorIdentity = providerMonitorIdentity
@@ -433,21 +425,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       updateActivityLayers()
     } else {
       startGlintTimer()
-      restartPixelMotionTimer(catState(snapshot, configuration: presentationConfiguration))
+      if presentationConfiguration.catStyle() != .none {
+        restartCatTimer(catState(snapshot, configuration: presentationConfiguration))
+      }
     }
   }
 
   func updateActivityAnimation() {
     activeProviders = apiActiveProviders.union(sessionActiveProviders)
     updateActivityLayers()
-    guard presentationConfiguration.displayMode() != "modern", let snap = lastSnap else { return }
-    // Going idle stops the motion timer below, so no later tick would drop the stripes — without
-    // this the last hatched frame sits in the menu bar until the next REFRESH_SECONDS render.
-    if activeProviders.isEmpty {
-      hatchPhase = 0
-      redrawPixelIcon()
-    }
-    restartPixelMotionTimer(catState(snap, configuration: presentationConfiguration))
   }
 
   func updateActivityLayers() {
@@ -480,7 +466,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
       let fillW = max(0, (MODERN_BODY_WIDTH - 4) * normalizedRemaining(summary.remain) / 100)
       // Too little fill to carry the stripes → run them over the whole body so activity stays visible
-      let wide = hatchCoversFill(fill: fillW, interior: MODERN_BODY_WIDTH - 4)
+      let wide = fillW >= HATCH_MIN_FILL_PT
       let rect = CGRect(x: bodyX + 2, y: originY + 5,
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
       let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
@@ -531,65 +517,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
   }
 
-  // Advance one pixel-mode motion frame (cat sprite + drain hatch) and redraw the icon only
-  @objc func pixelMotionTick() {
+  // Advance the cat one frame and redraw the icon only (menu untouched)
+  @objc func catTick() {
     guard !reduceMotionEnabled, presentationConfiguration.displayMode() != "modern",
-          animTimer?.isValid != true, let snap = lastSnap else { return }
-    let catStyle = presentationConfiguration.catStyle()
-    let hatching = !activeProviders.isEmpty
-    guard catStyle != .none || hatching else { return }
-    let state = catState(snap, configuration: presentationConfiguration)
-    let now = monotonicClock()
-    // The tick runs at the faster of the two cadences, so each channel advances on its own clock
-    if catStyle != .none, elapsedSince(lastCatAdvance, now) >= catTickInterval(state) - MOTION_TICK_SLACK {
-      catIdx += 1
-      lastCatAdvance = now
-    }
-    if hatching, elapsedSince(lastHatchAdvance, now) >= HATCH_TICK_INTERVAL - MOTION_TICK_SLACK {
-      hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX
-      // Count from the due time, not from now, so a tick cadence that isn't a divisor of
-      // HATCH_TICK_INTERVAL still averages out to the spec'd 0.60s period. More than a full
-      // interval behind means the timer was stopped — re-base instead of drifting fast to catch up.
-      let due = lastHatchAdvance.map { $0 + HATCH_TICK_INTERVAL } ?? now
-      lastHatchAdvance = now - due >= HATCH_TICK_INTERVAL ? now : due
-    }
-    // Advance the frame state first, then redraw only when there is a button (headless-verifiable)
-    redrawPixelIcon()
-  }
-
-  // Never advanced yet → treat as overdue so the first tick after a start draws a frame
-  private func elapsedSince(_ last: CFTimeInterval?, _ now: CFTimeInterval) -> CFTimeInterval {
-    guard let last else { return .infinity }
-    return now - last
-  }
-
-  // Draw the pixel icon at the current motion state (cat frame + hatch phase)
-  func redrawPixelIcon() {
-    guard let snap = lastSnap else { return }
-    pixelRedrawCount += 1
-    guard let button = statusItem?.button else { return }
+          presentationConfiguration.catStyle() != .none,
+          animTimer?.isValid != true,
+          let snap = lastSnap, let button = statusItem?.button else { return }
+    catIdx += 1
     let items = battItems(snap, configuration: presentationConfiguration)
     guard !items.isEmpty else { return }
-    let catStyle = presentationConfiguration.catStyle()
     let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     if let image = renderBatteryImage(dark: dark, items: items,
-                                      cat: catStyle == .none ? nil
-                                        : catState(snap, configuration: presentationConfiguration),
-                                      catFrameIndex: catIdx,
-                                      hatchPhase: activeProviders.isEmpty ? nil : hatchPhase,
-                                      hatchProviders: activeProviders,
-                                      configuration: presentationConfiguration) {
+                                      cat: catState(snap, configuration: presentationConfiguration),
+                                      catFrameIndex: catIdx, configuration: presentationConfiguration) {
       setButtonImage(image)
     }
-  }
-
-  // The tick runs at the faster of the two cadences; the cat only advances every Nth tick
-  func pixelTickInterval(_ state: CatState) -> TimeInterval {
-    let catActive = presentationConfiguration.catStyle() != .none
-    let hatchActive = !activeProviders.isEmpty
-    if catActive && hatchActive { return min(catTickInterval(state), HATCH_TICK_INTERVAL) }
-    if hatchActive { return HATCH_TICK_INTERVAL }
-    return catTickInterval(state)
   }
 
   // Cat style choice from Settings → Cat
@@ -599,21 +541,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     rerender()
   }
 
-  // (Re)start the pixel-mode motion cycle — runs when the cat or the drain hatch needs frames
-  func restartPixelMotionTimer(_ state: CatState) {
+  // (Re)start the cat cycle at the pace of the current state
+  func restartCatTimer(_ state: CatState) {
     guard (statusItem != nil || allowsHeadlessVisualResources), !reduceMotionEnabled,
           presentationConfiguration.displayMode() != "modern",
-          presentationConfiguration.catStyle() != .none || !activeProviders.isEmpty else {
+          presentationConfiguration.catStyle() != .none else {
       catTimer?.invalidate(); catTimer = nil
       return
     }
     catTimer?.invalidate()
     let epoch = motionEpoch
-    catTimer = visualTimerFactory(.cat, pixelTickInterval(state), true) { [weak self] timer in
+    catTimer = visualTimerFactory(.cat, catTickInterval(state), true) { [weak self] timer in
       guard let self, self.motionEpoch == epoch, !self.reduceMotionEnabled,
             self.presentationConfiguration.displayMode() != "modern" else { return }
       timer.callbackEffectBegan()
-      self.pixelMotionTick()
+      self.catTick()
     }
   }
 
@@ -629,8 +571,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     guard !frames.isEmpty,
           let final = renderBatteryImage(dark: dark, items: items, cat: state,
                                          catFrameIndex: catIdx,
-                                         hatchPhase: activeProviders.isEmpty ? nil : hatchPhase,
-                                         hatchProviders: activeProviders,
                                          configuration: presentationConfiguration) else { return }
     frames.append(final)
     let interval = ProcessInfo.processInfo.environment["CCB_ANIM_INTERVAL"].flatMap(Double.init) ?? 0.045
@@ -774,8 +714,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let image = modern
       ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets)
       : renderBatteryImage(dark: dark, items: items, cat: state, catFrameIndex: catIdx,
-                           hatchPhase: (reduceMotionEnabled || activeProviders.isEmpty) ? nil : hatchPhase,
-                           hatchProviders: activeProviders,
                            configuration: presentationConfiguration)
     let hasDisplayData = modern ? !summaries.isEmpty : !items.isEmpty
     let staticOutput: StaticStatusOutput
@@ -850,7 +788,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Pixel mode doesn't use activity layers — drop any left over from a prior modern presentation.
     clearActivityLayers()
     startGlintTimer()
-    restartPixelMotionTimer(output.catState)
+    restartCatTimer(output.catState)
     var frames: [NSImage] = []
     if !introPlayed {
       introPlayed = true
@@ -1791,47 +1729,7 @@ private func runCoreSelfTest() throws {
                 && launchReduced.providerMonitorIdentity === launchMonitor,
               "reduce-motion", "enabled-before-render",
               "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
-  // ── drain hatch: pixel capsule stripes ──
-  let hatchItems = [BattItem(label: "C5", provider: .claude, remain: 75),
-                    BattItem(label: "X5", provider: .codex, remain: 40)]
-  func hatchPixels(_ image: NSImage?) -> Data? { image?.tiffRepresentation }
-  func hasColor(_ image: NSImage?, _ rgb: (UInt8, UInt8, UInt8)) -> Bool {
-    guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-          rep.bitsPerPixel == 32, let data = rep.bitmapData else { return false }
-    for y in 0 ..< rep.pixelsHigh {
-      for x in 0 ..< rep.pixelsWide {
-        let p = data + y * rep.bytesPerRow + x * 4
-        if p[3] != 0, p[0] == rgb.0, p[1] == rgb.1, p[2] == rgb.2 { return true }
-      }
-    }
-    return false
-  }
-  let hatchPlain = hatchPixels(renderBatteryImage(dark: true, items: hatchItems))
-  let hatchOff = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
-                                                hatchPhase: 0, hatchProviders: []))
-  let hatchZero = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
-                                                 hatchPhase: 0, hatchProviders: [.claude]))
-  let hatchOne = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
-                                                hatchPhase: 1, hatchProviders: [.claude]))
-  try require(hatchPlain != nil && hatchPlain == hatchOff,
-              "drain-hatch", "inactive-render-unchanged",
-              "hatch parameters with no active provider changed the rendered image")
-  try require(hatchZero != nil && hatchZero != hatchPlain && hatchZero != hatchOne,
-              "drain-hatch", "phase-advances-pixels",
-              "hatch phase did not change the rendered pixels")
-  // Right→left drift: one phase step moves every stripe exactly one px left. The lean matches the
-  // modern tile — "/" on the y-down pixel canvas, i.e. a stripe cell repeats one px left, one down.
-  let hatchCells = (0 ..< 8).flatMap { y in (1 ..< 8).map { (x: $0, y: y) } }
-  try require(hatchCells.allSatisfy {
-                hatchStripeHit($0.x, $0.y, phase: 1) == hatchStripeHit($0.x + 1, $0.y, phase: 0)
-              },
-              "drain-hatch", "pixel-drift-direction",
-              "a hatch phase step did not shift the pixel stripes one px left")
-  try require(hatchCells.allSatisfy {
-                hatchStripeHit($0.x, $0.y, phase: 0) == hatchStripeHit($0.x - 1, $0.y + 1, phase: 0)
-              },
-              "drain-hatch", "pixel-stripe-lean",
-              "the pixel stripes did not lean like the modern tile")
+  // ── drain hatch: derived colors and shared modern geometry ──
   try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
                 && emptyHatchRGB(dark: true) == (95, 95, 95)
                 && emptyHatchRGB(dark: false) == (190, 190, 190),
@@ -1840,137 +1738,6 @@ private func runCoreSelfTest() throws {
   try require(MODERN_ITEM_WIDTH == 59,
               "drain-hatch", "modern-item-width",
               "modern item width did not match the rendered layout")
-  // Too little fill to carry stripes → the whole interior is hatched in the flat empty tone, so
-  // "in use" stays visible even at 0% remaining
-  let emptyItems = [BattItem(label: "C5", provider: .claude, remain: 0)]
-  let emptyPlain = renderBatteryImage(dark: true, items: emptyItems)
-  let emptyHatched = renderBatteryImage(dark: true, items: emptyItems, hatchPhase: 0,
-                                        hatchProviders: [.claude])
-  try require(hatchPixels(emptyPlain) != nil
-                && hatchPixels(emptyPlain) != hatchPixels(emptyHatched)
-                && hasColor(emptyHatched, emptyHatchRGB(dark: true))
-                && !hasColor(emptyPlain, emptyHatchRGB(dark: true)),
-              "drain-hatch", "low-fill-fallback-pixel",
-              "an empty battery lost the hatch instead of falling back to the empty tone")
-  // Above the fallback threshold the stripes derive from the remaining color — including the red band
-  let redItems = [BattItem(label: "C5", provider: .claude, remain: 20)]
-  let redHatched = renderBatteryImage(dark: true, items: redItems, hatchPhase: 0,
-                                      hatchProviders: [.claude])
-  try require(hasColor(redHatched, activityHatchRGB(20, dark: true))
-                && !hasColor(redHatched, emptyHatchRGB(dark: true)),
-              "drain-hatch", "derived-hatch-red-band-pixel",
-              "a red-band battery fell back to the flat empty tone instead of a derived hatch")
-  // ── drain hatch: pixel motion tick ──
-  let tickFlag = CoreSelfTestFlag(false)
-  let tickMode = CoreSelfTestBox("pixel")
-  let tickCat = CoreSelfTestBox(CatStyle.none)
-  let tickClock = CoreSelfTestBox(CFTimeInterval(0))
-  let tickConfiguration = PresentationConfiguration(
-    isMetricVisible: { _ in true }, displayMode: { tickMode.value },
-    catStyle: { tickCat.value }, batterySize: { "big" },
-    goldTestEnabled: { false }, forcedCatState: { nil }, language: { "en" })
-  let tickFactory = CoreSelfTestVisualTimerFactory()
-  var tickCompletions: [(Snapshot) -> Void] = []
-  let tickDelegate = AppDelegate(
-    presentationConfiguration: tickConfiguration,
-    collector: { tickCompletions.append($0) },
-    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
-    reduceMotionReader: { tickFlag.value }, glintIntervalReader: { 30 },
-    motionNotificationCenter: NotificationCenter(), visualTimerFactory: tickFactory.make,
-    monotonicClock: { tickClock.value },
-    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
-  tickDelegate.menuSink = { _ in }
-  tickDelegate.staticOutputSink = { _ in }
-  tickDelegate.accessibilitySummarySink = { _ in }
-  tickDelegate.requestRefresh(.initial)
-  tickCompletions[0](snapshot)
-  try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
-              "drain-hatch", "idle-pixel-timer-absent",
-              "pixel motion timer ran with no cat and no active provider")
-  tickDelegate.apiActiveProviders = [.claude]
-  tickDelegate.updateActivityAnimation()
-  let hatchTimer = tickDelegate.visualResourceSnapshot().catTimer
-  try require(hatchTimer != nil && tickDelegate.pixelTickInterval(.walk) == HATCH_TICK_INTERVAL,
-              "drain-hatch", "activity-starts-pixel-timer",
-              "activating a provider did not start the pixel motion timer at the hatch interval")
-  tickCat.value = .nyan
-  try require(tickDelegate.pixelTickInterval(.sleep) == HATCH_TICK_INTERVAL
-                && tickDelegate.pixelTickInterval(.dash) == 0.12,
-              "drain-hatch", "tick-interval-is-fastest",
-              "pixel tick interval was not the faster of the cat and hatch cadences")
-  // The first refresh leaves the intro frame timer running — invalidate it so the tick guard passes
-  tickFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
-  let phaseBefore = tickDelegate.hatchPhase
-  tickDelegate.pixelMotionTick()
-  tickClock.value += HATCH_TICK_INTERVAL
-  tickDelegate.pixelMotionTick()
-  try require(tickDelegate.hatchPhase == (phaseBefore + 2) % HATCH_PITCH_PX,
-              "drain-hatch", "tick-advances-phase",
-              "pixel motion tick did not advance the hatch phase")
-  tickDelegate.apiActiveProviders = []
-  tickCat.value = CatStyle.none
-  let redrawsBeforeIdle = tickDelegate.pixelRedrawCount
-  tickDelegate.updateActivityAnimation()
-  try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
-              "drain-hatch", "deactivation-stops-pixel-timer",
-              "pixel motion timer survived losing both the cat and every active provider")
-  // The timer stops above, so nothing else would repaint the icon for a whole refresh cycle
-  try require(tickDelegate.hatchPhase == 0
-                && tickDelegate.pixelRedrawCount == redrawsBeforeIdle + 1,
-              "drain-hatch", "deactivation-redraws-pixel-icon",
-              "the last provider going idle left the hatched frame frozen on the icon")
-  // Each channel holds its own cadence — the shared tick runs at the faster of the two, so neither
-  // the cat nor the hatch may advance on every tick
-  let throttleMode = CoreSelfTestBox("pixel")
-  let throttleCat = CoreSelfTestBox(CatState.sleep)
-  let throttleClock = CoreSelfTestBox(CFTimeInterval(0))
-  let throttleConfiguration = PresentationConfiguration(
-    isMetricVisible: { _ in true }, displayMode: { throttleMode.value },
-    catStyle: { .nyan }, batterySize: { "big" },
-    goldTestEnabled: { false }, forcedCatState: { throttleCat.value }, language: { "en" })
-  let throttleFactory = CoreSelfTestVisualTimerFactory()
-  var throttleCompletions: [(Snapshot) -> Void] = []
-  let throttleDelegate = AppDelegate(
-    presentationConfiguration: throttleConfiguration,
-    collector: { throttleCompletions.append($0) },
-    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
-    reduceMotionReader: { false }, glintIntervalReader: { 30 },
-    motionNotificationCenter: NotificationCenter(), visualTimerFactory: throttleFactory.make,
-    monotonicClock: { throttleClock.value },
-    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
-  throttleDelegate.menuSink = { _ in }
-  throttleDelegate.staticOutputSink = { _ in }
-  throttleDelegate.accessibilitySummarySink = { _ in }
-  throttleDelegate.requestRefresh(.initial)
-  throttleCompletions[0](snapshot)
-  throttleDelegate.apiActiveProviders = [.claude]
-  throttleDelegate.updateActivityAnimation()
-  throttleFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
-  // .sleep: the hatch forces a 0.2s tick, but the cat frame only turns over on its own 1.0s
-  let catIdxBefore = throttleDelegate.catIdx
-  let hatchPhaseBefore = throttleDelegate.hatchPhase
-  for step in 0 ..< 5 {
-    throttleClock.value = Double(step) * HATCH_TICK_INTERVAL
-    throttleDelegate.pixelMotionTick()
-  }
-  try require(throttleDelegate.catIdx == catIdxBefore + 1
-                && throttleDelegate.hatchPhase == (hatchPhaseBefore + 5) % HATCH_PITCH_PX,
-              "drain-hatch", "cat-cadence-throttled",
-              "cat frame advanced on every hatch-forced tick instead of holding its own 1.0s cadence")
-  // .dash: the cat is now the faster channel and the hatch is the one being throttled. 0.2s is not
-  // a multiple of the 0.12s tick, so the hatch has to catch up to keep its 0.60s period: 10 ticks
-  // span 1.08s and must carry 6 phase steps (5 would be the 0.72s period of a drifting cadence).
-  throttleCat.value = .dash
-  let dashCatIdxBefore = throttleDelegate.catIdx
-  let dashPhaseBefore = throttleDelegate.hatchPhase
-  for step in 0 ..< 10 {
-    throttleClock.value = 1.0 + Double(step) * catTickInterval(.dash)
-    throttleDelegate.pixelMotionTick()
-  }
-  try require(throttleDelegate.catIdx == dashCatIdxBefore + 10
-                && throttleDelegate.hatchPhase == (dashPhaseBefore + 6) % HATCH_PITCH_PX,
-              "drain-hatch", "hatch-cadence-throttled",
-              "hatch phase advanced on every cat-forced tick instead of holding its own 0.2s cadence")
 
   // ── drain hatch: modern mode layers ──
   // Note: local names prefixed hatchMode* (not modern*) — a `modernConfiguration` from
@@ -2072,8 +1839,8 @@ private func runCoreSelfTest() throws {
                 && stripesAfterRefresh?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-layer-survives-refresh",
               "a full refresh cycle on an unchanged presentation reset the running drain animation")
-  // The same low-fill fallback as pixel mode: above the threshold the layer tracks the fill in the
-  // derived tone, below it the whole body is hatched in the flat empty tone
+  // Low-fill fallback: above the threshold the layer tracks the fill in the derived tone,
+  // below it the whole body is hatched in the flat empty tone
   func hatchModeSnapshot(remaining: Double) -> Snapshot {
     let usage = ClaudeUsage(measuredAt: now, live: true,
                             fiveHour: UsageWindow(pct: 100 - remaining, resetsAt: now + 4_000),

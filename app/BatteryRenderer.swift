@@ -246,24 +246,14 @@ let MODERN_IMAGE_PAD: CGFloat = 2
 let MODERN_IMAGE_HEIGHT: CGFloat = 24
 let MODERN_ITEM_WIDTH = MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH + 3
 
-// Drain hatch — 45° stripes drifting right→left over the remaining fill ("this is being used up")
+// Drain hatch — 45° stripes drifting right→left over the remaining fill ("this is being used up").
+// Modern mode only; the pixel capsule interior is too small to carry stripes legibly.
 let HATCH_PITCH_PT: CGFloat = 9
 let HATCH_STRIPE_PT: CGFloat = 3
 let HATCH_PERIOD: CFTimeInterval = 0.6
-let HATCH_PITCH_PX = 3            // pixel canvas is in logical px (Canvas.SCALE doubles it)
-let HATCH_STRIPE_PX = 1
-let HATCH_TICK_INTERVAL: TimeInterval = 0.2   // one logical px per tick → a full pitch in HATCH_PERIOD
-// Timer callbacks fire a hair early as often as late; without this slack a 0.199s gap would defer
-// a channel's advance to the next tick and stretch its period by a whole tick.
-let MOTION_TICK_SLACK: TimeInterval = 0.005
 
-// Fraction of the capsule interior the fill needs before the stripes can run inside it (modern:
-// 6pt of a 34pt interior). Tied to the interior so both modes fall back at the same remaining
-// ratio; the floor keeps at least one stripe column per row on the pixel canvas.
-let HATCH_MIN_FILL_RATIO = 6.0 / 34
-func hatchCoversFill(fill: Double, interior: Double) -> Bool {
-  fill >= max(Double(HATCH_PITCH_PX), (interior * HATCH_MIN_FILL_RATIO).rounded())
-}
+// Below this the fill is too narrow to carry the stripes — they run over the whole body instead
+let HATCH_MIN_FILL_PT: CGFloat = 6
 
 // Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
 func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
@@ -276,13 +266,6 @@ func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
 
 // Used when the fill is too small to carry the hatch — the stripes run over the empty body instead
 func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8) { dark ? (95, 95, 95) : (190, 190, 190) }
-
-// Is this pixel-canvas cell on a stripe? Raising phase moves every stripe one px left (the drain
-// direction), matching the modern tile's leftward drift.
-func hatchStripeHit(_ x: Int, _ y: Int, phase: Int) -> Bool {
-  let d = (((x + y + phase) % HATCH_PITCH_PX) + HATCH_PITCH_PX) % HATCH_PITCH_PX
-  return d < HATCH_STRIPE_PX
-}
 
 // One period-aligned strip of 45° stripes: translating it left by exactly HATCH_PITCH_PT looks seamless
 func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImage? {
@@ -379,8 +362,7 @@ private func numW(_ p: Preset, _ s: String) -> Int { s.reduce(0) { $0 + p.adv($1
 // One capsule: border + remaining-fill + remaining number inside (100 included, always shown)
 // 100% is two-tone gold; when glintX is set, a diagonal glint sweep passes over the gold capsule
 private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
-                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?,
-                         _ hatchPhase: Int?) {
+                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?) {
   let by = midY - p.bh / 2
   cv.stroke(x, by, p.bw, p.bh, ink)
   cv.rect(x + p.bw, by + 3, 2, p.bh - 6, ink) // terminal
@@ -404,18 +386,6 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
       if gx >= x + 2, gx < x + 2 + fw {
         cv.set(gx, by + 2 + j, (255, 255, 240))
         if gx + 1 < x + 2 + fw { cv.set(gx + 1, by + 2 + j, (255, 240, 170)) }
-      }
-    }
-  }
-  // Drain hatch — skipped while the golden glint sweep owns the capsule
-  if let phase = hatchPhase, !(golden && glintX != nil) {
-    let wide = hatchCoversFill(fill: Double(fw), interior: Double(innerW))
-    let hatchW = wide ? fw : p.bw - 4
-    let col = wide ? activityHatchRGB(remain, dark: dark) : emptyHatchRGB(dark: dark)
-    for j in 0 ..< (p.bh - 4) {
-      for i in 0 ..< hatchW {
-        let px = x + 2 + i, py = by + 2 + j
-        if hatchStripeHit(px, py, phase: phase) { cv.set(px, py, col) }
       }
     }
   }
@@ -446,7 +416,6 @@ private func drawCat(_ cv: Canvas, _ x: Int, _ y: Int, _ style: CatStyle, _ stat
 // With `cat`, a pixel cat runs at the left edge, facing its battery "finish line".
 func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
                         cat: CatState? = nil, catFrameIndex: Int = 0,
-                        hatchPhase: Int? = nil, hatchProviders: Set<Provider> = [],
                         configuration: PresentationConfiguration = .production) -> NSImage? {
   let p = configuration.batterySize() == "small" ? PRESET_SMALL : PRESET_BIG
   let ink: RGB = dark ? (235, 235, 235) : (45, 45, 45)
@@ -480,8 +449,7 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
       x += numW(p, String(g)) + p.lblgap
       pg = g
     } else { x += p.gap }
-    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX,
-                hatchProviders.contains(item.provider) ? hatchPhase : nil)
+    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX)
     x += p.capw
   }
   guard let provider = CGDataProvider(data: Data(cv.buf) as CFData),
