@@ -254,6 +254,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var activeProviders: Set<Provider> = []
   var activityLayers: [Provider: CAShapeLayer] = [:]
   var catIdx = 0
+  var hatchPhase = 0
+  private var pixelTickCount = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
 
@@ -405,15 +407,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       updateActivityLayers()
     } else {
       startGlintTimer()
-      if presentationConfiguration.catStyle() != .none {
-        restartCatTimer(catState(snapshot, configuration: presentationConfiguration))
-      }
+      restartPixelMotionTimer(catState(snapshot, configuration: presentationConfiguration))
     }
   }
 
   func updateActivityAnimation() {
     activeProviders = apiActiveProviders.union(sessionActiveProviders)
     updateActivityLayers()
+    if presentationConfiguration.displayMode() != "modern", let snap = lastSnap {
+      restartPixelMotionTimer(catState(snap, configuration: presentationConfiguration))
+    }
   }
 
   func updateActivityLayers() {
@@ -466,21 +469,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
   }
 
-  // Advance the cat one frame and redraw the icon only (menu untouched)
-  @objc func catTick() {
+  // Advance one pixel-mode motion frame (cat sprite + drain hatch) and redraw the icon only
+  @objc func pixelMotionTick() {
     guard !reduceMotionEnabled, presentationConfiguration.displayMode() != "modern",
-          presentationConfiguration.catStyle() != .none,
-          animTimer?.isValid != true,
-          let snap = lastSnap, let button = statusItem?.button else { return }
-    catIdx += 1
+          animTimer?.isValid != true, let snap = lastSnap else { return }
+    let catStyle = presentationConfiguration.catStyle()
+    let hatching = !activeProviders.isEmpty
+    guard catStyle != .none || hatching else { return }
+    let state = catState(snap, configuration: presentationConfiguration)
+    if catStyle != .none {
+      let ticksPerCatFrame = max(1, Int((catTickInterval(state) / pixelTickInterval(state)).rounded()))
+      if pixelTickCount % ticksPerCatFrame == 0 { catIdx += 1 }
+    }
+    if hatching { hatchPhase = (hatchPhase + 1) % HATCH_PITCH_PX }
+    pixelTickCount += 1
+    // 프레임 상태를 먼저 진행시키고, 그릴 버튼이 있을 때만 다시 그린다 (헤드리스 검증 가능)
+    guard let button = statusItem?.button else { return }
     let items = battItems(snap, configuration: presentationConfiguration)
     guard !items.isEmpty else { return }
     let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     if let image = renderBatteryImage(dark: dark, items: items,
-                                      cat: catState(snap, configuration: presentationConfiguration),
-                                      catFrameIndex: catIdx, configuration: presentationConfiguration) {
+                                      cat: catStyle == .none ? nil : state,
+                                      catFrameIndex: catIdx,
+                                      hatchPhase: hatching ? hatchPhase : nil,
+                                      hatchProviders: activeProviders,
+                                      configuration: presentationConfiguration) {
       setButtonImage(image)
     }
+  }
+
+  // The tick runs at the faster of the two cadences; the cat only advances every Nth tick
+  func pixelTickInterval(_ state: CatState) -> TimeInterval {
+    let catActive = presentationConfiguration.catStyle() != .none
+    let hatchActive = !activeProviders.isEmpty
+    if catActive && hatchActive { return min(catTickInterval(state), HATCH_TICK_INTERVAL) }
+    if hatchActive { return HATCH_TICK_INTERVAL }
+    return catTickInterval(state)
   }
 
   // Cat style choice from Settings → Cat
@@ -490,21 +514,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     rerender()
   }
 
-  // (Re)start the cat cycle at the pace of the current state
-  func restartCatTimer(_ state: CatState) {
+  // (Re)start the pixel-mode motion cycle — runs when the cat or the drain hatch needs frames
+  func restartPixelMotionTimer(_ state: CatState) {
     guard (statusItem != nil || allowsHeadlessVisualResources), !reduceMotionEnabled,
           presentationConfiguration.displayMode() != "modern",
-          presentationConfiguration.catStyle() != .none else {
+          presentationConfiguration.catStyle() != .none || !activeProviders.isEmpty else {
       catTimer?.invalidate(); catTimer = nil
       return
     }
     catTimer?.invalidate()
     let epoch = motionEpoch
-    catTimer = visualTimerFactory(.cat, catTickInterval(state), true) { [weak self] timer in
+    catTimer = visualTimerFactory(.cat, pixelTickInterval(state), true) { [weak self] timer in
       guard let self, self.motionEpoch == epoch, !self.reduceMotionEnabled,
             self.presentationConfiguration.displayMode() != "modern" else { return }
       timer.callbackEffectBegan()
-      self.catTick()
+      self.pixelMotionTick()
     }
   }
 
@@ -520,6 +544,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     guard !frames.isEmpty,
           let final = renderBatteryImage(dark: dark, items: items, cat: state,
                                          catFrameIndex: catIdx,
+                                         hatchPhase: activeProviders.isEmpty ? nil : hatchPhase,
+                                         hatchProviders: activeProviders,
                                          configuration: presentationConfiguration) else { return }
     frames.append(final)
     let interval = ProcessInfo.processInfo.environment["CCB_ANIM_INTERVAL"].flatMap(Double.init) ?? 0.045
@@ -662,6 +688,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let image = modern
       ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets)
       : renderBatteryImage(dark: dark, items: items, cat: state, catFrameIndex: catIdx,
+                           hatchPhase: (reduceMotionEnabled || activeProviders.isEmpty) ? nil : hatchPhase,
+                           hatchProviders: activeProviders,
                            configuration: presentationConfiguration)
     let hasDisplayData = modern ? !summaries.isEmpty : !items.isEmpty
     let staticOutput: StaticStatusOutput
@@ -727,7 +755,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       return
     }
     startGlintTimer()
-    restartCatTimer(output.catState)
+    restartPixelMotionTimer(output.catState)
     var frames: [NSImage] = []
     if !introPlayed {
       introPlayed = true
@@ -1685,6 +1713,56 @@ private func runCoreSelfTest() throws {
   try require(MODERN_ITEM_WIDTH == 59,
               "drain-hatch", "modern-item-width",
               "modern item width did not match the rendered layout")
+  // ── drain hatch: 픽셀 모션 틱 ──
+  let tickFlag = CoreSelfTestFlag(false)
+  let tickMode = CoreSelfTestBox("pixel")
+  let tickCat = CoreSelfTestBox(CatStyle.none)
+  let tickConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { tickMode.value },
+    catStyle: { tickCat.value }, batterySize: { "big" },
+    goldTestEnabled: { false }, forcedCatState: { nil }, language: { "en" })
+  let tickFactory = CoreSelfTestVisualTimerFactory()
+  var tickCompletions: [(Snapshot) -> Void] = []
+  let tickDelegate = AppDelegate(
+    presentationConfiguration: tickConfiguration,
+    collector: { tickCompletions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { tickFlag.value }, glintIntervalReader: { 30 },
+    motionNotificationCenter: NotificationCenter(), visualTimerFactory: tickFactory.make,
+    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
+  tickDelegate.menuSink = { _ in }
+  tickDelegate.staticOutputSink = { _ in }
+  tickDelegate.accessibilitySummarySink = { _ in }
+  tickDelegate.requestRefresh(.initial)
+  tickCompletions[0](snapshot)
+  try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
+              "drain-hatch", "idle-pixel-timer-absent",
+              "pixel motion timer ran with no cat and no active provider")
+  tickDelegate.apiActiveProviders = [.claude]
+  tickDelegate.updateActivityAnimation()
+  let hatchTimer = tickDelegate.visualResourceSnapshot().catTimer
+  try require(hatchTimer != nil && tickDelegate.pixelTickInterval(.walk) == HATCH_TICK_INTERVAL,
+              "drain-hatch", "activity-starts-pixel-timer",
+              "activating a provider did not start the pixel motion timer at the hatch interval")
+  tickCat.value = .nyan
+  try require(tickDelegate.pixelTickInterval(.sleep) == HATCH_TICK_INTERVAL
+                && tickDelegate.pixelTickInterval(.dash) == 0.12,
+              "drain-hatch", "tick-interval-is-fastest",
+              "pixel tick interval was not the faster of the cat and hatch cadences")
+  // 최초 리프레시가 인트로 프레임 타이머를 켜 두므로, 틱 가드를 통과하도록 먼저 무효화한다
+  tickFactory.resources.filter { $0.kind == .animation }.forEach { $0.invalidate() }
+  let phaseBefore = tickDelegate.hatchPhase
+  tickDelegate.pixelMotionTick()
+  tickDelegate.pixelMotionTick()
+  try require(tickDelegate.hatchPhase == (phaseBefore + 2) % HATCH_PITCH_PX,
+              "drain-hatch", "tick-advances-phase",
+              "pixel motion tick did not advance the hatch phase")
+  tickDelegate.apiActiveProviders = []
+  tickCat.value = CatStyle.none
+  tickDelegate.updateActivityAnimation()
+  try require(tickDelegate.visualResourceSnapshot().catTimer == nil,
+              "drain-hatch", "deactivation-stops-pixel-timer",
+              "pixel motion timer survived losing both the cat and every active provider")
   print("self-test-core: drain-hatch PASS")
 
   print("self-test-core: reduce-motion PASS")
