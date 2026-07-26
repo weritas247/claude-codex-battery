@@ -1974,6 +1974,23 @@ private func runCoreSelfTest() throws {
   try require(activityWatchRoots(default: "/a", discovered: ["/b", "/a", "/b", ""]) == ["/a", "/b"],
               "activity-roots", "deduped",
               "duplicate or empty roots survived the merge")
+  // Only a forward mtime is a write. A root appearing or vanishing swaps which file wins without
+  // anything being appended, and that must not animate the widget.
+  try require(activityAdvanced(previous: 100, current: 101)
+                && activityAdvanced(previous: nil, current: 100)
+                && !activityAdvanced(previous: 100, current: 100)
+                && !activityAdvanced(previous: 100, current: 99)
+                && !activityAdvanced(previous: 100, current: nil)
+                && !activityAdvanced(previous: nil, current: nil),
+              "activity-roots", "forward-mtime-only",
+              "a fingerprint that did not move forward in time was reported as a write")
+  // Exercises proc_listallpids + proc_name + sysctl on the real machine (~1-2ms); the roots it
+  // returns depend on what is running, so only their shape can be asserted.
+  let discoveredNow = discoverCodexSessionRoots()
+  try require(discoveredNow.keys.allSatisfy { $0 == .codex }
+                && discoveredNow.values.joined().allSatisfy { $0.hasSuffix("/sessions") },
+              "activity-roots", "discovery-smoke",
+              "discovery returned a non-codex provider or a root outside a sessions subtree")
 
   print("self-test-core: activity-roots PASS")
 
@@ -2156,14 +2173,32 @@ if CommandLine.arguments.contains("--test-activity-monitor") {
   }
   check("late-discovery", lateEvents.contains("codex:active"))
 
-  // 4. Discovery repeating the default root must not double-report or otherwise misbehave.
+  // 4. Discovery repeating the default root must not crash or double-report. A smoke test: scanning
+  //    one root twice yields the same maximum, so it cannot fail on dedup alone — activity-roots
+  //    /deduped is what pins the merge.
   let dupRoot = try makeRoot("codex-dup")
   let dupSession = try seedSession(dupRoot)
   let dupEvents = observe("duplicate-discovery",
                           roots: [.claude: claudeRoot.path, .codex: dupRoot.path],
                           discovery: ActivityTestDiscovery([.codex: [dupRoot.path]]),
                           seconds: 3.5) { appendSession(dupSession) }
-  check("duplicate-discovery", dupEvents == ["codex:active"])
+  check("duplicate-discovery", dupEvents.filter { $0 == "codex:active" }.count == 1)
+
+  // 5. A discovered root going away (Orca quits) is not a write: the newest jsonl falls back to an
+  //    older one in the default root, and the widget must stay still.
+  let vanishCodexRoot = try makeRoot("codex-vanish-default")
+  let vanishRoot = try makeRoot("vanish/sessions")
+  let staleSession = try seedSession(vanishCodexRoot)
+  try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -600)],
+                                        ofItemAtPath: staleSession.path)
+  _ = try seedSession(vanishRoot)
+  let vanishDiscovery = ActivityTestDiscovery([.codex: [vanishRoot.path]])
+  let vanishEvents = observe("vanishing-root",
+                             roots: [.claude: claudeRoot.path, .codex: vanishCodexRoot.path],
+                             discovery: vanishDiscovery, seconds: 7.5) {
+    vanishDiscovery.value = [:]
+  }
+  check("vanishing-root", vanishEvents.isEmpty)
 
   try? FileManager.default.removeItem(at: base)
   print(failures.isEmpty ? "activity-monitor: PASS"

@@ -26,6 +26,14 @@ func activityWatchRoots(default fallback: String, discovered: [String]) -> [Stri
   return ([fallback] + discovered).filter { !$0.isEmpty && seen.insert($0).inserted }
 }
 
+// Whether the winning fingerprint means bytes were just written. Only a forward mtime counts: a
+// discovered root appearing or vanishing swaps which file wins without anything being appended.
+func activityAdvanced(previous: TimeInterval?, current: TimeInterval?) -> Bool {
+  guard let current else { return false }
+  guard let previous else { return true } // first file seen after the baseline
+  return current > previous
+}
+
 // GUI clients (Orca) run `codex` with a private CODEX_HOME, so the session it is appending right
 // now lives there and ~/.codex/sessions only catches up once the session is copied back. Read the
 // environment of every running `codex` to find those homes — plus our own, if we were given one.
@@ -261,7 +269,8 @@ final class ProviderActivityMonitor {
       let forcedActive = forced == "both"
         || (forced == "claude" && provider == .claude)
         || (forced == "codex" && provider == .codex)
-      if forcedActive || (!initial && current != nil && current != previous) {
+      if forcedActive || (!initial && activityAdvanced(previous: previous?.modifiedAt,
+                                                      current: current?.modifiedAt)) {
         activeUntil[provider] = now.addingTimeInterval(forcedActive ? 3600 : 4.0)
       }
 
