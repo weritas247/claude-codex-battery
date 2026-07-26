@@ -438,12 +438,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let dark = button.map { $0.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } ?? true
 
     for provider in [Provider.claude, .codex] {
-      if let stale = activityLayers.removeValue(forKey: provider) {
-        stale.removeAllAnimations()
-        stale.removeFromSuperlayer()
-      }
       guard activeProviders.contains(provider),
-            let index = summaries.firstIndex(where: { $0.provider == provider }) else { continue }
+            let index = summaries.firstIndex(where: { $0.provider == provider }) else {
+        if let stale = activityLayers.removeValue(forKey: provider) {
+          stale.removeAllAnimations()
+          stale.removeFromSuperlayer()
+        }
+        continue
+      }
       let summary = summaries[index]
       let itemX = originX + MODERN_IMAGE_PAD + CGFloat(index) * (MODERN_ITEM_WIDTH + MODERN_ITEM_GAP)
       let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
@@ -452,10 +454,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let wide = fillW >= 8
       let rect = CGRect(x: bodyX + 2, y: originY + 5,
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
-      let color = wide ? hatchNSColor(activityHatchRGB(summary.remain, dark: dark), alpha: 0.85)
-                       : hatchNSColor(emptyHatchRGB(dark: dark), alpha: 0.55)
+      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
+      let alpha: CGFloat = wide ? 0.85 : 0.55
+      // Reuse identity: same clip geometry + same stripe color → keep the running "drain" animation
+      // in place instead of restarting it at t=0 on every icon refresh (setButtonImage runs this
+      // every redraw, not only on real activity transitions).
+      let signature = "\(rect)|\(colorRGB)|\(alpha)"
+      if activityLayers[provider]?.name == signature { continue }
+      if let stale = activityLayers.removeValue(forKey: provider) {
+        stale.removeAllAnimations()
+        stale.removeFromSuperlayer()
+      }
+      let color = hatchNSColor(colorRGB, alpha: alpha)
 
       let clip = CALayer()
+      clip.name = signature
       clip.frame = rect
       clip.masksToBounds = true
       clip.cornerRadius = 2.5
@@ -1840,11 +1853,31 @@ private func runCoreSelfTest() throws {
                 && (stripes?.frame.width ?? 0) == (clip?.frame.width ?? 0) + HATCH_PITCH_PT,
               "drain-hatch", "modern-layer-geometry",
               "hatch layer geometry did not match the battery fill")
+  // A second call with nothing changed must not restart the running "drain" animation
+  hatchModeDelegate.updateActivityAnimation()
+  let clipReused = hatchModeDelegate.activityLayers[.claude]
+  let stripesReused = clipReused?.sublayers?.first
+  try require(clip != nil && clipReused != nil
+                && ObjectIdentifier(clip!) == ObjectIdentifier(clipReused!)
+                && stripes != nil && stripesReused != nil
+                && ObjectIdentifier(stripes!) == ObjectIdentifier(stripesReused!)
+                && stripesReused?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-reused",
+              "unchanged hatch geometry/color rebuilt the layer instead of reusing it")
   hatchModeDelegate.apiActiveProviders = []
   hatchModeDelegate.updateActivityAnimation()
   try require(hatchModeDelegate.activityLayers.isEmpty,
               "drain-hatch", "modern-layer-removed",
               "hatch layer survived the provider going idle")
+  // Becoming active again after idle is a real change — the old layer identity must not resurface
+  hatchModeDelegate.apiActiveProviders = [.claude]
+  hatchModeDelegate.updateActivityAnimation()
+  let clipRecreated = hatchModeDelegate.activityLayers[.claude]
+  try require(clip != nil && clipRecreated != nil
+                && ObjectIdentifier(clip!) != ObjectIdentifier(clipRecreated!)
+                && clipRecreated?.sublayers?.first?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-recreated-on-activate",
+              "hatch layer identity survived an idle/active cycle instead of rebuilding")
   hatchModeFlag.value = true
   // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
   // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
