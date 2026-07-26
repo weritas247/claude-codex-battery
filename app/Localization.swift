@@ -37,20 +37,20 @@ var UI_LANG = resolveLang()
 
 // English text is the key; missing entries fall back to English.
 private let TR: [String: [String: String]] = [
-  "% left": [
-    "ko": "남은 %", "ja": "残り%", "zh-Hans": "剩余 %", "zh-Hant": "剩餘 %", "es": "% restante",
+  "%d%% remaining": [
+    "ko": "%d%% 남음", "ja": "残り%d%%", "zh-Hans": "剩余 %d%%", "zh-Hant": "剩餘 %d%%", "es": "%d%% restante",
+  ],
+  "live · updated just now": [
+    "ko": "실시간 · 방금 업데이트", "ja": "ライブ · たった今更新", "zh-Hans": "实时 · 刚刚更新", "zh-Hant": "即時 · 剛剛更新", "es": "en vivo · actualizado ahora",
+  ],
+  "5h remaining is low and reset is still %@ away": [
+    "ko": "5시간 잔여량이 낮고 리셋까지 아직 %@ 남음", "ja": "5時間の残量が少なく、リセットまであと%@", "zh-Hans": "5 小时剩余量较低，距重置仍有 %@", "zh-Hant": "5 小時剩餘量偏低，距重置仍有 %@", "es": "queda poco en 5h y faltan %@ para el reinicio",
   ],
   "reset": [
     "ko": "리셋됨", "ja": "リセット済み", "zh-Hans": "已重置", "zh-Hant": "已重置", "es": "reiniciado",
   ],
   "resets": [
     "ko": "리셋", "ja": "リセット", "zh-Hans": "重置", "zh-Hant": "重置", "es": "reinicia",
-  ],
-  "used": [
-    "ko": "사용", "ja": "使用", "zh-Hans": "已用", "zh-Hant": "已用", "es": "usado",
-  ],
-  "left": [
-    "ko": "남음", "ja": "残り", "zh-Hans": "剩余", "zh-Hant": "剩餘", "es": "restante",
   ],
   "usage": [
     "ko": "사용량", "ja": "使用量", "zh-Hans": "用量", "zh-Hant": "用量", "es": "uso",
@@ -61,13 +61,6 @@ private let TR: [String: [String: String]] = [
     "zh-Hans": "%@ 前的缓存 — 请检查登录/网络",
     "zh-Hant": "%@ 前的快取 — 請檢查登入/網路",
     "es": "caché de hace %@ — revisa sesión/red",
-  ],
-  "data from %@ ago — check login/network": [
-    "ko": "%@ 전 데이터 — 로그인·네트워크 확인",
-    "ja": "%@前のデータ — ログイン/ネットワークを確認",
-    "zh-Hans": "%@ 前的数据 — 请检查登录/网络",
-    "zh-Hant": "%@ 前的資料 — 請檢查登入/網路",
-    "es": "datos de hace %@ — revisa sesión/red",
   ],
   "this block  $%.2f · %@ tokens · $%@/h": [
     "ko": "이번 블록  $%.2f · %@ 토큰 · $%@/h",
@@ -118,20 +111,6 @@ private let TR: [String: [String: String]] = [
     "zh-Hans": "一键安装 v%@ 更新（当前 v%@）",
     "zh-Hant": "一鍵安裝 v%@ 更新（目前 v%@）",
     "es": "Instalar actualización v%@ — un clic (actual v%@)",
-  ],
-  "lap: %@ to the finish — on pace ✓": [
-    "ko": "랩: 결승선까지 %@ — 완주 페이스 ✓",
-    "ja": "ラップ: ゴールまで%@ — 完走ペース ✓",
-    "zh-Hans": "本圈：距终点 %@ — 可跑完 ✓",
-    "zh-Hant": "本圈：距終點 %@ — 可跑完 ✓",
-    "es": "vuelta: %@ a la meta — a buen ritmo ✓",
-  ],
-  "lap: %@ to the finish — projected empty ⚠": [
-    "ko": "랩: 결승선까지 %@ — 이대로면 방전 ⚠",
-    "ja": "ラップ: ゴールまで%@ — このままでは電池切れ ⚠",
-    "zh-Hans": "本圈：距终点 %@ — 预计将耗尽 ⚠",
-    "zh-Hant": "本圈：距終點 %@ — 預計將耗盡 ⚠",
-    "es": "vuelta: %@ a la meta — se agotará ⚠",
   ],
   "Refresh": [
     "ko": "새로고침", "ja": "更新", "zh-Hans": "刷新", "zh-Hant": "重新整理", "es": "Actualizar",
@@ -250,18 +229,22 @@ private let TR: [String: [String: String]] = [
   ],
 ]
 
-func tr(_ en: String) -> String {
-  if UI_LANG == "en" { return en }
-  return TR[en]?[UI_LANG] ?? en
+func tr(_ en: String, language: String = UI_LANG) -> String {
+  if language == "en" { return en }
+  return TR[en]?[language] ?? en
 }
 
 func trf(_ en: String, _ args: CVarArg...) -> String {
   String(format: tr(en), arguments: args)
 }
 
+func trf(_ en: String, language: String, _ args: CVarArg...) -> String {
+  String(format: tr(en, language: language), arguments: args)
+}
+
 // Gauge labels padded per language so the Menlo bars line up
-func gaugeLabels() -> (five: String, week: String) {
-  switch UI_LANG {
+func gaugeLabels(language: String = UI_LANG) -> (five: String, week: String) {
+  switch language {
   case "ko": return ("5시간", "주간 ")
   case "ja": return ("5時間", "週間 ")
   case "zh-Hans": return ("5小时", "每周 ")

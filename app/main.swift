@@ -27,70 +27,102 @@ func collectSnapshot() -> Snapshot {
 }
 
 // Snapshot → menu bar battery items (same logic as the widget JS's rendering code)
-func battItems(_ snap: Snapshot) -> [BattItem] {
+func battItems(_ snap: Snapshot, configuration: PresentationConfiguration = .production) -> [BattItem] {
   var items: [BattItem] = []
-  if let u = snap.usage {
-    if isMetricVisible("claude5") { items.append(BattItem(label: "C5", provider: .claude, remain: u.fiveHour.map { max(0, 100 - $0.pct) })) }
-    if isMetricVisible("claudeWeek") { items.append(BattItem(label: "CW", provider: .claude, remain: u.weekly.map { max(0, 100 - $0.pct) })) }
-    if isMetricVisible("claudeFable"), let f = u.fable { items.append(BattItem(label: "CF", provider: .claude, remain: max(0, 100 - f.pct))) }
-  } else if let b = snap.block, isMetricVisible("claude5") {
-    items.append(BattItem(label: "C5", provider: .claude, remain: max(0, 100 - b.elapsedPct)))
-  }
-  if let cx = snap.codex, cx.primary != nil || cx.secondary != nil {
-    // Only draws whichever window is active at the time — a missing window is omitted rather than shown as an empty capsule
-    if isMetricVisible("codex5"), let p = windowState(cx.primary, now: snap.now) {
-      items.append(BattItem(label: "X5", provider: .codex, remain: max(0, 100 - p.pct)))
+  if let usage = snap.usage {
+    if configuration.isMetricVisible("claude5") {
+      items.append(BattItem(label: "C5", provider: .claude,
+                            remain: usage.fiveHour.map { normalizedRemaining(fromUsed: $0.pct) }))
     }
-    if isMetricVisible("codexWeek"), let s = windowState(cx.secondary, now: snap.now) {
-      items.append(BattItem(label: "XW", provider: .codex, remain: max(0, 100 - s.pct)))
+    if configuration.isMetricVisible("claudeWeek") {
+      items.append(BattItem(label: "CW", provider: .claude,
+                            remain: usage.weekly.map { normalizedRemaining(fromUsed: $0.pct) }))
     }
-  } else if let cr = snap.codex?.credits {
-    // premium consumable-style: has credits=100 / exhausted=0 / unlimited=100
-    let remain: Double = cr.unlimited ? 100 : (cr.hasCredits && (cr.balance ?? 0) > 0 ? 100 : 0)
-    items.append(BattItem(label: "X", provider: .codex, remain: remain))
+    if configuration.isMetricVisible("claudeFable"), let fable = usage.fable {
+      items.append(BattItem(label: "CF", provider: .claude,
+                            remain: normalizedRemaining(fromUsed: fable.pct)))
+    }
+  } else if let block = snap.block, configuration.isMetricVisible("claude5") {
+    items.append(BattItem(label: "C5", provider: .claude,
+                          remain: normalizedRemaining(fromUsed: block.elapsedPct)))
   }
-  // For visually testing the golden battery (dev only)
-  if ProcessInfo.processInfo.environment["CCB_GOLD_TEST"] != nil {
+  if let codex = snap.codex, codex.primary != nil || codex.secondary != nil {
+    if configuration.isMetricVisible("codex5"), let primary = windowState(codex.primary, now: snap.now) {
+      items.append(BattItem(label: "X5", provider: .codex,
+                            remain: normalizedRemaining(fromUsed: primary.pct)))
+    }
+    if configuration.isMetricVisible("codexWeek"), let secondary = windowState(codex.secondary, now: snap.now) {
+      items.append(BattItem(label: "XW", provider: .codex,
+                            remain: normalizedRemaining(fromUsed: secondary.pct)))
+    }
+  } else if let credits = snap.codex?.credits {
+    let remaining: Double = credits.unlimited || (credits.hasCredits && (credits.balance ?? 0) > 0) ? 100 : 0
+    items.append(BattItem(label: "X", provider: .codex, remain: normalizedRemaining(remaining)))
+  }
+  if configuration.goldTestEnabled() {
     return items.map { BattItem(label: $0.label, provider: $0.provider, remain: $0.remain == nil ? nil : 100) }
   }
   return items
 }
 
-func providerSummaries(_ snap: Snapshot) -> [ProviderSummary] {
+func providerSummaries(_ snap: Snapshot,
+                       configuration: PresentationConfiguration = .production) -> [ProviderSummary] {
   var summaries: [ProviderSummary] = []
-  if let u = snap.usage {
-    if isMetricVisible("claude5"), let w = u.fiveHour { summaries.append(ProviderSummary(provider: .claude, remain: w.pct)) }
-    else if isMetricVisible("claudeWeek"), let w = u.weekly { summaries.append(ProviderSummary(provider: .claude, remain: w.pct)) }
-    else if isMetricVisible("claudeFable"), let f = u.fable { summaries.append(ProviderSummary(provider: .claude, remain: f.pct)) }
-  } else if let b = snap.block, isMetricVisible("claude5") {
-    summaries.append(ProviderSummary(provider: .claude, remain: max(0, 100 - b.elapsedPct)))
+  if let usage = snap.usage {
+    var remaining: [Double] = []
+    if configuration.isMetricVisible("claude5"), let window = usage.fiveHour {
+      remaining.append(normalizedRemaining(fromUsed: window.pct))
+    }
+    if configuration.isMetricVisible("claudeWeek"), let window = usage.weekly {
+      remaining.append(normalizedRemaining(fromUsed: window.pct))
+    }
+    if configuration.isMetricVisible("claudeFable"), let window = usage.fable {
+      remaining.append(normalizedRemaining(fromUsed: window.pct))
+    }
+    if let mostConstrained = remaining.min() {
+      summaries.append(ProviderSummary(provider: .claude, remain: mostConstrained))
+    }
+  } else if let block = snap.block, configuration.isMetricVisible("claude5") {
+    summaries.append(ProviderSummary(provider: .claude,
+                                     remain: normalizedRemaining(fromUsed: block.elapsedPct)))
   }
-  if let cx = snap.codex {
-    if isMetricVisible("codex5"), let p = windowState(cx.primary, now: snap.now) { summaries.append(ProviderSummary(provider: .codex, remain: p.pct)) }
-    else if isMetricVisible("codexWeek"), let s = windowState(cx.secondary, now: snap.now) { summaries.append(ProviderSummary(provider: .codex, remain: s.pct)) }
-    else if let cr = cx.credits { summaries.append(ProviderSummary(provider: .codex, remain: cr.unlimited || (cr.hasCredits && (cr.balance ?? 0) > 0) ? 100 : 0)) }
+  if let codex = snap.codex {
+    var remaining: [Double] = []
+    if configuration.isMetricVisible("codex5"), let window = windowState(codex.primary, now: snap.now) {
+      remaining.append(normalizedRemaining(fromUsed: window.pct))
+    }
+    if configuration.isMetricVisible("codexWeek"), let window = windowState(codex.secondary, now: snap.now) {
+      remaining.append(normalizedRemaining(fromUsed: window.pct))
+    }
+    if let mostConstrained = remaining.min() {
+      summaries.append(ProviderSummary(provider: .codex, remain: mostConstrained))
+    } else if let credits = codex.credits {
+      let remaining: Double = credits.unlimited || (credits.hasCredits && (credits.balance ?? 0) > 0) ? 100 : 0
+      summaries.append(ProviderSummary(provider: .codex, remain: normalizedRemaining(remaining)))
+    }
   }
   return summaries
 }
 
-// Cat state from the snapshot: burn rate → speed, projected depletion → panic
+// Cat state from the snapshot: low remaining with a distant reset → panic
 // (CCB_CAT_TEST=sleep|walk|run|dash|panic forces a state for testing)
-func catState(_ snap: Snapshot) -> CatState {
-  if let t = ProcessInfo.processInfo.environment["CCB_CAT_TEST"],
-     let s = CatState(rawValue: t) { return s }
-  if let w = snap.usage?.fiveHour, let ra = w.resetsAt,
-     max(0, 100 - w.pct) < 12, ra - snap.now > 1800 { return .panic }
-  let items = battItems(snap)
+func catState(_ snap: Snapshot, configuration: PresentationConfiguration = .production) -> CatState {
+  if let forced = configuration.forcedCatState() { return forced }
+  if let window = snap.usage?.fiveHour, let reset = window.resetsAt,
+     hasLowRemainingResetDistantRisk(remaining: normalizedRemaining(fromUsed: window.pct),
+                                     resetSeconds: Double(reset - snap.now)) { return .panic }
+  let items = battItems(snap, configuration: configuration)
   if !items.isEmpty, items.allSatisfy({ isGolden($0.remain) }) { return .happy }
-  let cph = snap.block?.costPerHour ?? 0
-  if cph < 0.5 { return .sleep }
-  if cph < 8 { return .walk }
-  if cph < 40 { return .run }
+  let costPerHour = snap.block?.costPerHour ?? 0
+  if costPerHour < 0.5 { return .sleep }
+  if costPerHour < 8 { return .walk }
+  if costPerHour < 40 { return .run }
   return .dash
 }
 
 // Startup sequence: starting from the leftmost battery, fills from 0 → actual remaining value in order (the number counts up too)
-func introFrames(items: [BattItem], dark: Bool, cat: CatState) -> [NSImage] {
+func introFrames(items: [BattItem], dark: Bool, cat: CatState,
+                 configuration: PresentationConfiguration = .production) -> [NSImage] {
   var out: [NSImage] = []
   let steps = 4
   for i in 0 ..< items.count {
@@ -102,35 +134,200 @@ func introFrames(items: [BattItem], dark: Bool, cat: CatState) -> [NSImage] {
           : it.remain == nil ? nil : 0
         return BattItem(label: it.label, provider: it.provider, remain: r)
       }
-      if let img = renderBatteryImage(dark: dark, items: frame, cat: cat) { out.append(img) }
+      if let img = renderBatteryImage(dark: dark, items: frame, cat: cat,
+                                      configuration: configuration) { out.append(img) }
     }
   }
   return out
 }
 
 // Golden battery glint sweep (when at least one capsule is golden)
-func glintFrames(items: [BattItem], dark: Bool, cat: CatState) -> [NSImage] {
+func glintFrames(items: [BattItem], dark: Bool, cat: CatState,
+                 configuration: PresentationConfiguration = .production) -> [NSImage] {
   guard items.contains(where: { isGolden($0.remain) }) else { return [] }
   var out: [NSImage] = []
-  for g in stride(from: 0, to: batteryGlintSpan() + 2, by: 2) {
-    if let img = renderBatteryImage(dark: dark, items: items, glintX: g, cat: cat) { out.append(img) }
+  for g in stride(from: 0, to: batteryGlintSpan(configuration: configuration) + 2, by: 2) {
+    if let img = renderBatteryImage(dark: dark, items: items, glintX: g, cat: cat,
+                                    configuration: configuration) { out.append(img) }
   }
   return out
 }
 
+enum StaticStatusOutput {
+  case image(NSImage)
+  case fallback(String)
+}
+
+private func statusAccessibilitySummary(items: [BattItem], summaries: [ProviderSummary],
+                                        modern: Bool, hasDisplayData: Bool,
+                                        language: String) -> String {
+  guard hasDisplayData else {
+    return tr("Run Claude Code or Codex and usage will appear here", language: language)
+  }
+  let metricNames = [
+    "C5": "Claude 5h", "CW": "Claude week", "CF": "Claude Fable",
+    "X5": "Codex 5h", "XW": "Codex week", "X": "Codex"
+  ]
+  let values: [(String, Double?)]
+  if modern {
+    values = summaries.map {
+      ($0.provider == .claude ? "Claude" : "Codex", Optional($0.remain))
+    }
+  } else {
+    values = items.map {
+      (tr(metricNames[$0.label] ?? $0.label, language: language), $0.remain)
+    }
+  }
+  return values.map { name, remaining in
+    guard let remaining else { return "\(name), —" }
+    return "\(name), \(trf("%d%% remaining", language: language, Int(remaining.rounded())))"
+  }.joined(separator: "; ")
+}
+
+struct PreparedPresentation {
+  let menu: NSMenu
+  let staticOutput: StaticStatusOutput
+  let items: [BattItem]
+  let summaries: [ProviderSummary]
+  let catState: CatState
+  let hasDisplayData: Bool
+  let accessibilitySummary: String
+}
+
+typealias SnapshotCollector = (@escaping (Snapshot) -> Void) -> Void
+
+enum VisualTimerKind {
+  case animation
+  case cat
+  case glint
+}
+
+protocol VisualTimerResource: AnyObject {
+  var isValid: Bool { get }
+  func invalidate()
+  func callbackEffectBegan()
+}
+
+extension VisualTimerResource {
+  func callbackEffectBegan() {}
+}
+
+extension Timer: VisualTimerResource {}
+
+typealias VisualTimerFactory = (
+  _ kind: VisualTimerKind, _ interval: TimeInterval, _ repeats: Bool,
+  _ callback: @escaping (VisualTimerResource) -> Void
+) -> VisualTimerResource
+
+func scheduledVisualTimer(kind: VisualTimerKind, interval: TimeInterval, repeats: Bool,
+                                  callback: @escaping (VisualTimerResource) -> Void) -> VisualTimerResource {
+  Timer.scheduledTimer(withTimeInterval: interval, repeats: repeats) { timer in callback(timer) }
+}
+
+struct VisualResourceSnapshot: Equatable {
+  let epoch: Int
+  let animationTimer: ObjectIdentifier?
+  let catTimer: ObjectIdentifier?
+  let glintTimer: ObjectIdentifier?
+  let activityLayers: [Provider: ObjectIdentifier]
+  let refreshTimer: ObjectIdentifier?
+  let refreshTimerActive: Bool
+  let providerMonitor: ObjectIdentifier?
+  let acceptedRenderCount: Int
+}
+
+enum RefreshTrigger: Equatable {
+  case initial
+  case timer
+  case manual
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-  var statusItem: NSStatusItem!
+  var statusItem: NSStatusItem?
   var timer: Timer?
-  var glintTimer: Timer?
-  var catTimer: Timer?
+  var glintTimer: VisualTimerResource?
+  var catTimer: VisualTimerResource?
   var providerActivityMonitor: ProviderActivityMonitor?
+  private(set) var providerMonitorIdentity: AnyObject?
   var apiActiveProviders: Set<Provider> = []
   var sessionActiveProviders: Set<Provider> = []
   var activeProviders: Set<Provider> = []
   var activityLayers: [Provider: CAShapeLayer] = [:]
   var catIdx = 0
-  var lastSnap: Snapshot? // last collected result — size/theme changes re-render from this instantly without re-collecting
+  private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
+
+  let presentationConfiguration: PresentationConfiguration
+  private let collector: SnapshotCollector
+  private let assetContextFactory: () -> ProviderAssetContext
+  private let duplicateReader: () -> Bool
+  private let opener: (URL) -> Void
+  private let reduceMotionReader: () -> Bool
+  private let glintIntervalReader: () -> TimeInterval
+  private let visualTimerFactory: VisualTimerFactory
+  private let allowsHeadlessVisualResources: Bool
+  private let motionNotificationCenter: NotificationCenter
+  private var motionObserver: NSObjectProtocol?
+  private(set) var reduceMotionEnabled = false
+  private var motionEpoch = 0
+  private var refreshGate = RefreshGate()
+  private(set) var acceptedGenerations: [RefreshGeneration] = []
+  private(set) var acceptedRenderCount = 0
+  private var refreshTriggers: [RefreshGeneration: RefreshTrigger] = [:]
+  private(set) var acceptedRefreshTriggers: [RefreshTrigger] = []
+  var menuSink: ((NSMenu) -> Void)?
+  var staticOutputSink: ((StaticStatusOutput) -> Void)?
+  var accessibilitySummarySink: ((String) -> Void)?
+  private(set) var appliedAccessibilitySummary: String?
+  private var prepared: PreparedPresentation?
+  private var introPlayed = false
+  private var menuPopped = false
+  private var promptShown = false
+  private var animTimer: VisualTimerResource?
+
+  init(presentationConfiguration: PresentationConfiguration = .production,
+       collector: @escaping SnapshotCollector = { completion in
+         DispatchQueue.global(qos: .utility).async {
+           let snapshot = collectSnapshot()
+           DispatchQueue.main.async { completion(snapshot) }
+         }
+       },
+       assetContextFactory: @escaping () -> ProviderAssetContext = { .production() },
+       duplicateReader: @escaping () -> Bool = { swiftBarDuplicate() },
+       opener: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
+       reduceMotionReader: @escaping () -> Bool = {
+         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+       },
+       glintIntervalReader: @escaping () -> TimeInterval = {
+         ProcessInfo.processInfo.environment["CCB_GLINT_SECONDS"].flatMap(Double.init) ?? 30
+       },
+       motionNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+       visualTimerFactory: @escaping VisualTimerFactory = scheduledVisualTimer,
+       allowsHeadlessVisualResources: Bool = false,
+       providerMonitorIdentity: AnyObject? = nil) {
+    self.presentationConfiguration = presentationConfiguration
+    self.collector = collector
+    self.assetContextFactory = assetContextFactory
+    self.duplicateReader = duplicateReader
+    self.opener = opener
+    self.reduceMotionReader = reduceMotionReader
+    self.glintIntervalReader = glintIntervalReader
+    self.visualTimerFactory = visualTimerFactory
+    self.allowsHeadlessVisualResources = allowsHeadlessVisualResources
+    self.motionNotificationCenter = motionNotificationCenter
+    self.providerMonitorIdentity = providerMonitorIdentity
+    super.init()
+    reduceMotionEnabled = reduceMotionReader()
+    motionObserver = motionNotificationCenter.addObserver(
+      forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in self?.applyReduceMotionPreference() }
+    if reduceMotionEnabled { introPlayed = true }
+  }
+
+  deinit {
+    if let motionObserver { motionNotificationCenter.removeObserver(motionObserver) }
+  }
 
   var loginItemEnabled: Bool {
     if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
@@ -139,7 +336,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    statusItem.button?.title = "…"
+    statusItem?.button?.title = "…"
     providerActivityHandler = { [weak self] provider, active in
       DispatchQueue.main.async {
         guard let self else { return }
@@ -154,19 +351,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       else { self.sessionActiveProviders.remove(provider) }
       self.updateActivityAnimation()
     }
+    providerMonitorIdentity = providerActivityMonitor
     providerActivityMonitor?.start()
     // Refresh battery colors on dark/light mode switch
     DistributedNotificationCenter.default().addObserver(
       self, selector: #selector(rerender),
       name: NSNotification.Name("AppleInterfaceThemeChangedNotification"), object: nil)
-    refresh()
+    applyReduceMotionPreference()
+    requestRefresh(.initial)
     timer = Timer.scheduledTimer(withTimeInterval: REFRESH_SECONDS, repeats: true) { [weak self] _ in
-      self?.refresh()
+      self?.requestRefresh(.timer)
     }
-    // The golden battery glint plays every 30s independently of data refresh (replays from cached state without re-collecting)
-    let glintEvery = ProcessInfo.processInfo.environment["CCB_GLINT_SECONDS"].flatMap(Double.init) ?? 30.0
-    glintTimer = Timer.scheduledTimer(withTimeInterval: glintEvery, repeats: true) { [weak self] _ in
-      self?.playGoldenGlint()
+    if !reduceMotionEnabled { startGlintTimer() }
+  }
+
+  private func startGlintTimer() {
+    guard (statusItem != nil || allowsHeadlessVisualResources), glintTimer == nil,
+          !reduceMotionEnabled, presentationConfiguration.displayMode() != "modern" else { return }
+    let epoch = motionEpoch
+    glintTimer = visualTimerFactory(.glint, glintIntervalReader(), true) { [weak self] timer in
+      guard let self, self.motionEpoch == epoch, !self.reduceMotionEnabled,
+            self.presentationConfiguration.displayMode() != "modern" else { return }
+      timer.callbackEffectBegan()
+      self.playGoldenGlint()
+    }
+  }
+
+  private func stopVisualMotion() {
+    motionEpoch += 1
+    animTimer?.invalidate(); animTimer = nil
+    catTimer?.invalidate(); catTimer = nil
+    glintTimer?.invalidate(); glintTimer = nil
+    activityLayers.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
+    activityLayers.removeAll()
+  }
+
+  @objc func applyReduceMotionPreference() {
+    let next = reduceMotionReader()
+    guard next != reduceMotionEnabled else { return }
+    reduceMotionEnabled = next
+    stopVisualMotion()
+    if next {
+      introPlayed = true
+      if let prepared { applyStaticOutput(prepared.staticOutput, accessibilitySummary: prepared.accessibilitySummary) }
+    } else {
+      restoreEligibleMotion()
+    }
+  }
+
+  private func restoreEligibleMotion() {
+    guard !reduceMotionEnabled, let snapshot = lastSnap else { return }
+    if presentationConfiguration.displayMode() == "modern" {
+      updateActivityLayers()
+    } else {
+      startGlintTimer()
+      if presentationConfiguration.catStyle() != .none {
+        restartCatTimer(catState(snapshot, configuration: presentationConfiguration))
+      }
     }
   }
 
@@ -176,17 +417,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func updateActivityLayers() {
-    guard currentDisplayMode() == "modern",
-          let button = statusItem?.button,
-          let snap = lastSnap else {
-      activityLayers.values.forEach { $0.removeFromSuperlayer() }
+    guard !reduceMotionEnabled, presentationConfiguration.displayMode() == "modern",
+          let snap = lastSnap, statusItem?.button != nil || allowsHeadlessVisualResources else {
+      activityLayers.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
       activityLayers.removeAll()
       return
     }
-    button.wantsLayer = true
-    let summaries = providerSummaries(snap)
-    let imageWidth = button.image?.size.width ?? 0
-    let imageOriginX = max(0, (button.bounds.width - imageWidth) / 2)
+    let button = statusItem?.button
+    button?.wantsLayer = true
+    let summaries = providerSummaries(snap, configuration: presentationConfiguration)
+    let imageWidth = button?.image?.size.width ?? 0
+    let buttonWidth = button?.bounds.width ?? imageWidth
+    let imageOriginX = max(0, (buttonWidth - imageWidth) / 2)
     let itemWidth: CGFloat = 61
     let itemGap: CGFloat = 7
 
@@ -197,7 +439,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         continue
       }
       let iconCenter = CGPoint(x: imageOriginX + 2 + CGFloat(index) * (itemWidth + itemGap) + 6.5,
-                               y: button.bounds.midY)
+                               y: button?.bounds.midY ?? 12)
       let color = provider == .claude
         ? NSColor(calibratedRed: 0.92, green: 0.38, blue: 0.20, alpha: 1)
         : NSColor(calibratedRed: 0.45, green: 0.68, blue: 1.0, alpha: 1)
@@ -206,7 +448,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layer.bounds = CGRect(x: 0, y: 0, width: 3, height: 3)
         layer.path = CGPath(ellipseIn: layer.bounds, transform: nil)
         layer.fillColor = color.cgColor
-        button.layer?.addSublayer(layer)
+        button?.layer?.addSublayer(layer)
         activityLayers[provider] = layer
         return layer
       }()
@@ -226,17 +468,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   // Advance the cat one frame and redraw the icon only (menu untouched)
   @objc func catTick() {
-    if currentDisplayMode() == "modern" { return }
-    if currentCatStyle() == .none { return }
-    if animTimer?.isValid == true { return } // don't fight intro/glint playback
-    guard let snap = lastSnap, let btn = statusItem.button else { return }
+    guard !reduceMotionEnabled, presentationConfiguration.displayMode() != "modern",
+          presentationConfiguration.catStyle() != .none,
+          animTimer?.isValid != true,
+          let snap = lastSnap, let button = statusItem?.button else { return }
     catIdx += 1
-    let items = battItems(snap)
+    let items = battItems(snap, configuration: presentationConfiguration)
     guard !items.isEmpty else { return }
-    let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    if let img = renderBatteryImage(dark: dark, items: items,
-                                    cat: catState(snap), catFrameIndex: catIdx) {
-      setButtonImage(img)
+    let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    if let image = renderBatteryImage(dark: dark, items: items,
+                                      cat: catState(snap, configuration: presentationConfiguration),
+                                      catFrameIndex: catIdx, configuration: presentationConfiguration) {
+      setButtonImage(image)
     }
   }
 
@@ -249,23 +492,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   // (Re)start the cat cycle at the pace of the current state
   func restartCatTimer(_ state: CatState) {
+    guard (statusItem != nil || allowsHeadlessVisualResources), !reduceMotionEnabled,
+          presentationConfiguration.displayMode() != "modern",
+          presentationConfiguration.catStyle() != .none else {
+      catTimer?.invalidate(); catTimer = nil
+      return
+    }
     catTimer?.invalidate()
-    catTimer = Timer.scheduledTimer(withTimeInterval: catTickInterval(state), repeats: true) { [weak self] _ in
-      self?.catTick()
+    let epoch = motionEpoch
+    catTimer = visualTimerFactory(.cat, catTickInterval(state), true) { [weak self] timer in
+      guard let self, self.motionEpoch == epoch, !self.reduceMotionEnabled,
+            self.presentationConfiguration.displayMode() != "modern" else { return }
+      timer.callbackEffectBegan()
+      self.catTick()
     }
   }
 
   // Based on the cached snapshot, plays the glint sweep once if a golden battery is present
   func playGoldenGlint() {
-    if currentDisplayMode() == "modern" { return }
-    if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
-      FileHandle.standardError.write(Data("glint tick: lastSnap=\(lastSnap != nil)\n".utf8))
-    }
-    guard let snap = lastSnap, let btn = statusItem.button else { return }
-    let items = battItems(snap)
-    let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    var frames = glintFrames(items: items, dark: dark, cat: catState(snap))
-    guard !frames.isEmpty, let final = renderBatteryImage(dark: dark, items: items) else { return }
+    guard !reduceMotionEnabled, presentationConfiguration.displayMode() != "modern",
+          let snap = lastSnap, let button = statusItem?.button else { return }
+    let items = battItems(snap, configuration: presentationConfiguration)
+    let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let state = catState(snap, configuration: presentationConfiguration)
+    var frames = glintFrames(items: items, dark: dark, cat: state,
+                             configuration: presentationConfiguration)
+    guard !frames.isEmpty,
+          let final = renderBatteryImage(dark: dark, items: items, cat: state,
+                                         catFrameIndex: catIdx,
+                                         configuration: presentationConfiguration) else { return }
     frames.append(final)
     let interval = ProcessInfo.processInfo.environment["CCB_ANIM_INTERVAL"].flatMap(Double.init) ?? 0.045
     playFrames(frames, interval: interval)
@@ -289,20 +544,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   @objc func refresh() {
-    DispatchQueue.global(qos: .utility).async { [weak self] in
-      let snap = collectSnapshot()
-      DispatchQueue.main.async { self?.render(snap) }
+    requestRefresh(.manual)
+  }
+
+  func requestRefresh(_ trigger: RefreshTrigger) {
+    switch refreshGate.request() {
+    case .start(let generation):
+      refreshTriggers[generation] = trigger
+      startActiveCollection()
+    case .queueNewest(let generation, let replacing):
+      if let replacing { refreshTriggers.removeValue(forKey: replacing) }
+      refreshTriggers[generation] = trigger
     }
   }
 
-  // Redraws immediately from the last snapshot without re-collecting data (for size/theme changes)
+  private func startActiveCollection() {
+    guard let generation = refreshGate.active else { return }
+    collector { [weak self] snapshot in
+      if Thread.isMainThread { self?.completeCollection(snapshot, generation: generation) }
+      else { DispatchQueue.main.async { self?.completeCollection(snapshot, generation: generation) } }
+    }
+  }
+
+  private func completeCollection(_ snapshot: Snapshot, generation: RefreshGeneration) {
+    switch refreshGate.complete(generation) {
+    case .accept:
+      let trigger = refreshTriggers.removeValue(forKey: generation)
+      acceptAndPresent(retainingUnavailableProviders(in: snapshot), generation: generation,
+                       trigger: trigger)
+    case .discardAndStart:
+      refreshTriggers.removeValue(forKey: generation)
+      startActiveCollection()
+    case .stale:
+      break
+    }
+  }
+
+  private func retainingUnavailableProviders(in snapshot: Snapshot) -> Snapshot {
+    guard let previous = lastSnap else { return snapshot }
+    let usage = snapshot.usage ?? previous.usage.map {
+      ClaudeUsage(measuredAt: $0.measuredAt, live: false, fiveHour: $0.fiveHour,
+                  weekly: $0.weekly, fable: $0.fable)
+    }
+    let codex = snapshot.codex ?? previous.codex.map {
+      CodexUsage(measuredAt: $0.measuredAt, live: false, limitId: $0.limitId, plan: $0.plan,
+                 primary: $0.primary, secondary: $0.secondary, credits: $0.credits)
+    }
+    return Snapshot(now: snapshot.now, usage: usage, block: snapshot.block,
+                    models: snapshot.models, codex: codex, update: snapshot.update)
+  }
+
+  private func acceptAndPresent(_ snapshot: Snapshot, generation: RefreshGeneration,
+                                trigger: RefreshTrigger?) {
+    lastSnap = snapshot
+    acceptedGenerations.append(generation)
+    if let trigger { acceptedRefreshTriggers.append(trigger) }
+    acceptedRenderCount += 1
+    prepareAndApplyCurrent(snapshot)
+  }
+
   @objc func rerender() {
-    if let s = lastSnap { render(s) } else { refresh() }
+    if let snapshot = lastSnap { prepareAndApplyCurrent(snapshot) } else { refresh() }
   }
 
   // Divides by the display scale factor based on pixel size (Retina ÷2, 1x monitor ÷1) — safe to reapply
   func setButtonImage(_ img: NSImage) {
-    guard let btn = statusItem.button else { return }
+    guard let btn = statusItem?.button else { return }
     let scale = btn.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
     let rep = img.representations.first
     let pw = CGFloat(rep?.pixelsWide ?? Int(img.size.width))
@@ -315,92 +622,156 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   // Plays a frame sequence — stops on the last frame
-  private var animTimer: Timer?
   func playFrames(_ frames: [NSImage], interval: TimeInterval) {
     animTimer?.invalidate()
-    guard !frames.isEmpty else { return }
-    var i = 0
-    animTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
-      guard let self = self, i < frames.count else { t.invalidate(); return }
-      self.setButtonImage(frames[i])
-      i += 1
+    guard (statusItem != nil || allowsHeadlessVisualResources),
+          !reduceMotionEnabled, !frames.isEmpty else { return }
+    let epoch = motionEpoch
+    var index = 0
+    animTimer = visualTimerFactory(.animation, interval, true) { [weak self] timer in
+      guard let self, self.motionEpoch == epoch, !self.reduceMotionEnabled,
+            index < frames.count else {
+        timer.invalidate()
+        return
+      }
+      timer.callbackEffectBegan()
+      self.setButtonImage(frames[index])
+      index += 1
     }
   }
 
-  private var introPlayed = false
+  func visualResourceSnapshot() -> VisualResourceSnapshot {
+    VisualResourceSnapshot(
+      epoch: motionEpoch,
+      animationTimer: animTimer.map { ObjectIdentifier($0) },
+      catTimer: catTimer.map { ObjectIdentifier($0) },
+      glintTimer: glintTimer.map { ObjectIdentifier($0) },
+      activityLayers: activityLayers.mapValues { ObjectIdentifier($0) },
+      refreshTimer: timer.map { ObjectIdentifier($0) },
+      refreshTimerActive: timer?.isValid == true,
+      providerMonitor: providerMonitorIdentity.map { ObjectIdentifier($0) },
+      acceptedRenderCount: acceptedRenderCount)
+  }
 
-  func render(_ snap: Snapshot) {
-    lastSnap = snap
-    let items = battItems(snap)
-    let summaries = providerSummaries(snap)
-    if let btn = statusItem.button {
-      let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-      let st = catState(snap)
-      let finalImg = currentDisplayMode() == "modern"
-        ? renderModernSummaryImage(dark: dark, summaries: summaries)
-        : renderBatteryImage(dark: dark, items: items, cat: st, catFrameIndex: catIdx)
-      let hasDisplayData = currentDisplayMode() == "modern" ? !summaries.isEmpty : !items.isEmpty
-      if hasDisplayData, let finalImg = finalImg {
-        if currentDisplayMode() == "modern" { catTimer?.invalidate() } else { restartCatTimer(st) }
-        // Startup sequence (once only) + golden battery glint sweep (whenever present) → the last frame is the actual state
-        var frames: [NSImage] = []
-        if !introPlayed {
-          introPlayed = true
-        if currentDisplayMode() != "modern" { frames += introFrames(items: items, dark: dark, cat: st) }
-        }
-        if currentDisplayMode() != "modern" { frames += glintFrames(items: items, dark: dark, cat: st) }
-        if frames.isEmpty {
-          setButtonImage(finalImg)
-        } else {
-          frames.append(finalImg)
-          // CCB_ANIM_INTERVAL: overrides the frame interval (for verification/demo)
-          let interval = ProcessInfo.processInfo.environment["CCB_ANIM_INTERVAL"].flatMap(Double.init) ?? 0.045
-          playFrames(frames, interval: interval)
-        }
-      } else {
-        btn.image = nil
-        btn.title = "🔋 —"
-      }
+  func preparePresentation(_ snapshot: Snapshot, dark: Bool, swiftBarDuplicate: Bool,
+                           assets: ProviderAssetContext) -> PreparedPresentation {
+    let items = battItems(snapshot, configuration: presentationConfiguration)
+    let summaries = providerSummaries(snapshot, configuration: presentationConfiguration)
+    let state = catState(snapshot, configuration: presentationConfiguration)
+    let modern = presentationConfiguration.displayMode() == "modern"
+    let image = modern
+      ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets)
+      : renderBatteryImage(dark: dark, items: items, cat: state, catFrameIndex: catIdx,
+                           configuration: presentationConfiguration)
+    let hasDisplayData = modern ? !summaries.isEmpty : !items.isEmpty
+    let staticOutput: StaticStatusOutput
+    if hasDisplayData, let image {
+      staticOutput = .image(image)
+    } else {
+      staticOutput = .fallback("🔋 —")
     }
-    statusItem.menu = buildMenu(snap, swiftBarDup: swiftBarDuplicate(), target: self)
-    // --pop-menu: pops the menu open by itself right after the first render (for screenshots/verification — no accessibility access needed)
+    let language = presentationConfiguration.language()
+    let menu = buildMenu(snapshot, swiftBarDup: swiftBarDuplicate, target: self,
+                         assets: assets, language: language)
+    let accessibilitySummary = statusAccessibilitySummary(
+      items: items, summaries: summaries, modern: modern, hasDisplayData: hasDisplayData,
+      language: language)
+    return PreparedPresentation(menu: menu, staticOutput: staticOutput, items: items,
+                                summaries: summaries, catState: state,
+                                hasDisplayData: hasDisplayData,
+                                accessibilitySummary: accessibilitySummary)
+  }
+
+  func prepareAndApplyCurrent(_ snapshot: Snapshot) {
+    // A re-presentation is a new visual epoch. Invalidate every callback and layer
+    // before reading mutable presentation configuration or installing new output.
+    stopVisualMotion()
+    let dark = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let next = preparePresentation(snapshot, dark: dark, swiftBarDuplicate: duplicateReader(),
+                                   assets: assetContextFactory())
+    prepared = next
+    applyMenu(next.menu)
+    applyStaticOutput(next.staticOutput, accessibilitySummary: next.accessibilitySummary)
+    applyEligibleMotion(next, dark: dark)
+    applyProductionPostRender()
+  }
+
+  private func applyMenu(_ menu: NSMenu) {
+    if let menuSink { menuSink(menu) } else { statusItem?.menu = menu }
+  }
+
+  private func applyStaticOutput(_ output: StaticStatusOutput, accessibilitySummary: String) {
+    appliedAccessibilitySummary = accessibilitySummary
+    accessibilitySummarySink?(accessibilitySummary)
+    if let staticOutputSink {
+      staticOutputSink(output)
+      return
+    }
+    guard let button = statusItem?.button else { return }
+    button.setAccessibilityLabel(accessibilitySummary)
+    switch output {
+    case .image(let image):
+      setButtonImage(image)
+    case .fallback(let title):
+      button.image = nil
+      button.title = title
+    }
+  }
+
+  private func applyEligibleMotion(_ output: PreparedPresentation, dark: Bool) {
+    guard !reduceMotionEnabled, statusItem != nil || allowsHeadlessVisualResources,
+          output.hasDisplayData else { return }
+    let modern = presentationConfiguration.displayMode() == "modern"
+    if modern {
+      updateActivityLayers()
+      return
+    }
+    startGlintTimer()
+    restartCatTimer(output.catState)
+    var frames: [NSImage] = []
+    if !introPlayed {
+      introPlayed = true
+      frames += introFrames(items: output.items, dark: dark, cat: output.catState,
+                            configuration: presentationConfiguration)
+    }
+    frames += glintFrames(items: output.items, dark: dark, cat: output.catState,
+                          configuration: presentationConfiguration)
+    if case .image(let finalImage) = output.staticOutput, !frames.isEmpty {
+      frames.append(finalImage)
+      let interval = ProcessInfo.processInfo.environment["CCB_ANIM_INTERVAL"].flatMap(Double.init) ?? 0.045
+      playFrames(frames, interval: interval)
+    }
+  }
+
+  private func applyProductionPostRender() {
+    guard statusItem != nil else { return }
     if CommandLine.arguments.contains("--pop-menu"), !menuPopped {
       menuPopped = true
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-        guard let self = self, let btn = self.statusItem.button, let win = btn.window,
-              let menu = self.statusItem.menu else { return }
-        _ = (btn, win)
+        guard let self, let button = self.statusItem?.button, button.window != nil,
+              let menu = self.statusItem?.menu else { return }
         NSApp.activate(ignoringOtherApps: true)
-        // Pops open at a fixed coordinate under the menu bar on the main display (origin 0,0) — keeps the capture position fixed even on multiple monitors
         let screen = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens[0]
-        let pt = NSPoint(x: screen.frame.midX, y: screen.frame.maxY - 28)
-        FileHandle.standardError.write(Data("popup: at \(pt)\n".utf8))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-          menu.popUp(positioning: nil, at: pt, in: nil)
-        }
+        let point = NSPoint(x: screen.frame.midX, y: screen.frame.maxY - 28)
+        menu.popUp(positioning: nil, at: point, in: nil)
       }
       return
     }
-    // Onboarding runs only after the first render has hit the screen — so the modal doesn't block the data from showing
     if !promptShown {
       promptShown = true
       DispatchQueue.main.async { [weak self] in self?.firstRunAutoStartPrompt() }
     }
   }
 
-  private var menuPopped = false
-
-  private var promptShown = false
-
   @objc func openLink(_ sender: NSMenuItem) {
     if let s = sender.representedObject as? String, let url = URL(string: s) {
-      NSWorkspace.shared.open(url)
+      opener(url)
     }
   }
 
   @objc func openProviderApp(_ sender: NSMenuItem) {
     guard let path = sender.representedObject as? String else { return }
-    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    opener(URL(fileURLWithPath: path))
   }
 
   // Language choice: "auto" or a code from SUPPORTED_LANGS; also mirrored to
@@ -519,8 +890,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   // One-click auto-update — download → verify signature → replace self → relaunch. Falls back to the releases page on failure
   @objc func selfUpdate(_ sender: NSMenuItem) {
     guard let v = sender.representedObject as? String else { return }
-    statusItem.button?.image = nil
-    statusItem.button?.title = tr("⬇︎ Updating…")
+    statusItem?.button?.image = nil
+    statusItem?.button?.title = tr("⬇︎ Updating…")
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       do {
         try downloadAndInstallUpdate(version: v) { _ in }
@@ -546,6 +917,766 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 }
 
+private struct CoreSelfTestFailure: Error {
+  let group: String
+  let check: String
+  let detail: String
+}
+
+private final class CoreSelfTestAssetResolver: ProviderAssetResolving {
+  let apps: [Provider: URL]
+  private(set) var installedLookups = 0
+  private(set) var imageLookups = 0
+
+  init(apps: [Provider: URL]) { self.apps = apps }
+
+  func installedApp(for provider: Provider) -> URL? {
+    installedLookups += 1
+    return apps[provider]
+  }
+
+  func providerImage(for provider: Provider, installedApp: URL?) -> NSImage? {
+    imageLookups += 1
+    return NSImage(size: NSSize(width: 16, height: 16))
+  }
+
+  func applicationImage(for provider: Provider, installedApp: URL?) -> NSImage? {
+    imageLookups += 1
+    return NSImage(size: NSSize(width: 16, height: 16))
+  }
+}
+
+private final class CoreSelfTestFlag {
+  var value: Bool
+  init(_ value: Bool) { self.value = value }
+}
+
+private final class CoreSelfTestBox<Value> {
+  var value: Value
+  init(_ value: Value) { self.value = value }
+}
+
+private final class CoreSelfTestVisualTimer: VisualTimerResource {
+  let kind: VisualTimerKind
+  private let callback: (VisualTimerResource) -> Void
+  private(set) var isValid = true
+  private(set) var callbackAttempts = 0
+  private(set) var effectBegins = 0
+
+  init(kind: VisualTimerKind, callback: @escaping (VisualTimerResource) -> Void) {
+    self.kind = kind
+    self.callback = callback
+  }
+
+  func invalidate() { isValid = false }
+  func callbackEffectBegan() { effectBegins += 1 }
+  func fireEvenIfInvalid() {
+    callbackAttempts += 1
+    callback(self)
+  }
+}
+
+private final class CoreSelfTestVisualTimerFactory {
+  private(set) var resources: [CoreSelfTestVisualTimer] = []
+
+  func make(kind: VisualTimerKind, interval: TimeInterval, repeats: Bool,
+            callback: @escaping (VisualTimerResource) -> Void) -> VisualTimerResource {
+    let resource = CoreSelfTestVisualTimer(kind: kind, callback: callback)
+    resources.append(resource)
+    return resource
+  }
+}
+
+private func runCoreSelfTest() throws {
+  func require(_ value: @autoclosure () -> Bool, _ group: String, _ check: String,
+               _ detail: String) throws {
+    if !value() { throw CoreSelfTestFailure(group: group, check: check, detail: detail) }
+  }
+  let configuration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .nyan },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let now = 2_000_000_000
+  let usage = ClaudeUsage(measuredAt: now, live: true,
+                          fiveHour: UsageWindow(pct: 25, resetsAt: now + 4_000),
+                          weekly: UsageWindow(pct: 50, resetsAt: nil), fable: nil)
+  let codex = CodexUsage(measuredAt: now, live: true, limitId: nil, plan: "plus",
+                         primary: CodexWindow(usedPercent: 25, resetsAt: now + 3_000),
+                         secondary: nil, credits: nil)
+  let snapshot = Snapshot(now: now, usage: usage, block: nil, models: nil, codex: codex,
+                          update: (nil, false))
+
+  let used = [-1.0, 0, 25, 50, 80, 100, 101]
+  let expected = [100.0, 100, 75, 50, 20, 0, 0]
+  try require(zip(used, expected).allSatisfy { normalizedRemaining(fromUsed: $0) == $1 },
+              "conversion-bands-risk", "conversion-table", "used values did not normalize")
+  try require(remainingBand(20) == .red && remainingBand(20.0001) == .amber
+                && remainingBand(49.999) == .amber && remainingBand(50) == .green
+                && remainingBand(.nan) == .red,
+              "conversion-bands-risk", "band-boundaries", "remaining bands differ")
+  try require(hasLowRemainingResetDistantRisk(remaining: 11.999, resetSeconds: 1_801)
+                && !hasLowRemainingResetDistantRisk(remaining: 12, resetSeconds: 1_801)
+                && !hasLowRemainingResetDistantRisk(remaining: 11, resetSeconds: 1_800),
+              "conversion-bands-risk", "risk-boundaries", "risk threshold differs")
+  try require(battItems(snapshot, configuration: configuration).first?.remain == 75
+                && providerSummaries(snapshot, configuration: configuration).first?.remain == 50,
+              "conversion-bands-risk", "cross-surface-25",
+              "detail did not show 75 remaining or summary did not show the constrained 50")
+  let modernConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "small" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let conversionAssets = ProviderAssetContext(resolver: CoreSelfTestAssetResolver(apps: [:]))
+  let pixelImage = renderBatteryImage(
+    dark: false, items: battItems(snapshot, configuration: configuration),
+    cat: catState(snapshot, configuration: configuration), configuration: configuration)
+  let modernImage = renderModernSummaryImage(
+    dark: false, summaries: providerSummaries(snapshot, configuration: modernConfiguration),
+    assetContext: conversionAssets)
+  try require(pixelImage != nil && modernImage != nil,
+              "conversion-bands-risk", "fixed-render-modes", "pixel or modern output was absent")
+  let nonFiniteUsage = ClaudeUsage(
+    measuredAt: now, live: true, fiveHour: UsageWindow(pct: .nan, resetsAt: now + 4_000),
+    weekly: UsageWindow(pct: .infinity, resetsAt: nil), fable: nil)
+  let nonFiniteCodex = CodexUsage(
+    measuredAt: now, live: true, limitId: nil, plan: nil,
+    primary: CodexWindow(usedPercent: -.infinity, resetsAt: now + 3_000),
+    secondary: nil, credits: nil)
+  let nonFiniteSnapshot = Snapshot(
+    now: now, usage: nonFiniteUsage, block: nil, models: nil, codex: nonFiniteCodex,
+    update: (nil, false))
+  let nonFiniteItems = battItems(nonFiniteSnapshot, configuration: configuration)
+  let nonFiniteSummaries = providerSummaries(
+    nonFiniteSnapshot, configuration: modernConfiguration)
+  try require(nonFiniteItems.allSatisfy { $0.remain == 0 }
+                && nonFiniteSummaries.allSatisfy { $0.remain == 0 }
+                && renderBatteryImage(dark: false, items: nonFiniteItems,
+                                      configuration: configuration) != nil
+                && renderModernSummaryImage(dark: false, summaries: nonFiniteSummaries,
+                                            assetContext: conversionAssets) != nil
+                && !hasLowRemainingResetDistantRisk(remaining: .nan,
+                                                     resetSeconds: .infinity),
+              "conversion-bands-risk", "non-finite-surfaces",
+              "non-finite values escaped defensive normalization/rendering")
+  let noCatBig = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let noCatSmall = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "small" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let fixedItems = battItems(snapshot, configuration: noCatBig)
+  let bigImage = renderBatteryImage(dark: false, items: fixedItems, configuration: noCatBig)
+  let smallImage = renderBatteryImage(dark: false, items: fixedItems, configuration: noCatSmall)
+  try require(bigImage?.size == NSSize(width: 186, height: 24)
+                && smallImage?.size == NSSize(width: 140, height: 18)
+                && modernImage?.size == NSSize(width: 129, height: 24),
+              "conversion-bands-risk", "fixed-dimensions",
+              "big/small/modern geometry changed")
+  let hiddenConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in false }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "ja" })
+  try require(battItems(snapshot, configuration: hiddenConfiguration).isEmpty
+                && providerSummaries(snapshot, configuration: hiddenConfiguration).isEmpty
+                && renderBatteryImage(dark: false, items: [],
+                                      configuration: hiddenConfiguration)?.size
+                  == NSSize(width: 16, height: 24),
+              "conversion-bands-risk", "hidden-metrics", "hidden metrics leaked across surfaces")
+  var productionReaderCalls = 0
+  let countingConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in productionReaderCalls += 1; return true },
+    displayMode: { productionReaderCalls += 1; return "modern" },
+    catStyle: { productionReaderCalls += 1; return .none },
+    batterySize: { productionReaderCalls += 1; return "small" },
+    goldTestEnabled: { productionReaderCalls += 1; return false },
+    forcedCatState: { productionReaderCalls += 1; return nil },
+    language: { productionReaderCalls += 1; return "ja" })
+  let countingDelegate = AppDelegate(
+    presentationConfiguration: countingConfiguration, collector: { _ in },
+    assetContextFactory: { conversionAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { true }, motionNotificationCenter: NotificationCenter())
+  let counted = countingDelegate.preparePresentation(
+    snapshot, dark: false, swiftBarDuplicate: false, assets: conversionAssets)
+  try require(productionReaderCalls > 0 && counted.hasDisplayData
+                && counted.menu.items.first?.title.contains("使用量") == true
+                && counted.accessibilitySummary.contains("残り75%"),
+              "conversion-bands-risk", "injected-reader-sentinel",
+              "test configuration or injected language was bypassed")
+  print("self-test-core: conversion-bands-risk PASS")
+
+  let apps: [Provider: URL] = [
+    .claude: URL(fileURLWithPath: "/in-memory/Claude.app"),
+    .codex: URL(fileURLWithPath: "/in-memory/Codex.app")
+  ]
+  let resolver = CoreSelfTestAssetResolver(apps: apps)
+  let assets = ProviderAssetContext(resolver: resolver)
+  var opened: [URL] = []
+  let menuDelegate = AppDelegate(
+    presentationConfiguration: configuration, collector: { _ in },
+    assetContextFactory: { assets }, duplicateReader: { false },
+    opener: { opened.append($0) }, reduceMotionReader: { true },
+    glintIntervalReader: { 30 }, motionNotificationCenter: NotificationCenter())
+  let menu = buildMenu(snapshot, swiftBarDup: false, target: menuDelegate,
+                       assets: assets, language: "en")
+  let titles = menu.items.map(\.title)
+  try require(titles.contains { $0.contains("75% remaining") }
+                && !titles.contains { $0.contains("used") || $0.contains("left")
+                  || $0.localizedCaseInsensitiveContains("projected")
+                  || $0.localizedCaseInsensitiveContains("on pace") },
+              "menu-actions-copy", "remaining-copy", "gauge copy is not remaining-only")
+  try require(titles.filter { $0 == "live · updated just now" }.count == 2,
+              "menu-actions-copy", "freshness-count", "expected one freshness row per provider")
+  try require(titles.contains { $0.contains("remaining is low") } == false,
+              "menu-actions-copy", "warning-boundary", "25 used incorrectly warned")
+  let lowUsage = ClaudeUsage(measuredAt: now, live: true,
+                             fiveHour: UsageWindow(pct: 89, resetsAt: now + 1_801),
+                             weekly: nil, fable: nil)
+  let lowSnapshot = Snapshot(now: now, usage: lowUsage, block: nil, models: nil, codex: nil,
+                             update: (nil, false))
+  let lowMenu = buildMenu(lowSnapshot, swiftBarDup: false, target: menuDelegate,
+                          assets: assets, language: "en")
+  try require(lowMenu.items.contains { $0.title == "⚠ 5h remaining is low and reset is still 30m away" },
+              "menu-actions-copy", "factual-low-warning", "low/reset-distant warning missing")
+  let pastUsage = ClaudeUsage(measuredAt: now, live: true,
+                              fiveHour: UsageWindow(pct: 25, resetsAt: now), weekly: nil, fable: nil)
+  let pastMenu = buildMenu(
+    Snapshot(now: now, usage: pastUsage, block: nil, models: nil, codex: nil, update: (nil, false)),
+    swiftBarDup: false, target: menuDelegate, assets: assets, language: "en")
+  try require(pastMenu.items.contains { $0.title.contains("75% remaining  ·  reset") },
+              "menu-actions-copy", "past-reset", "past reset was not marked reset")
+  guard let claudeHeader = menu.items.first(where: { ($0.representedObject as? String) == CLAUDE_USAGE_URL }),
+        let claudeApp = menu.items.first(where: { ($0.representedObject as? String) == apps[.claude]?.path })
+  else { throw CoreSelfTestFailure(group: "menu-actions-copy", check: "actions", detail: "action rows missing") }
+  menuDelegate.openLink(claudeHeader)
+  menuDelegate.openProviderApp(claudeApp)
+  try require(opened == [URL(string: CLAUDE_USAGE_URL)!, apps[.claude]!],
+              "menu-actions-copy", "action-destinations", "HTTPS/file actions differ")
+  try require(claudeHeader.title.contains("↗") && !claudeApp.title.contains("↗"),
+              "menu-actions-copy", "action-distinction", "external/app affordances differ")
+  try require(resolver.installedLookups == 2,
+              "menu-actions-copy", "installed-lookup-once", "installed apps were re-resolved")
+  let expectedMenuTitles = [
+    "Claude Code · usage ↗",
+    "5h    ▕\(gaugeBar(75, 20))▏ 75% remaining  ·  resets \(fmtDur(4_000))  ↗",
+    "week  ▕\(gaugeBar(50, 20))▏ 50% remaining  ↗",
+    "live · updated just now",
+    "Open Claude app",
+    "",
+    "Codex · plus · usage ↗",
+    "5h    ▕\(gaugeBar(75, 20))▏ 75% remaining  ·  resets \(fmtDur(3_000))  ↗",
+    "live · updated just now",
+    "Open Codex app",
+    "",
+    "Refresh",
+    "Settings",
+    "",
+    "Quit"
+  ]
+  try require(titles == expectedMenuTitles,
+              "menu-actions-copy", "exact-hierarchy-order", "menu hierarchy/order changed")
+  let actionable = menu.items.filter { $0.action != nil }
+  try require(actionable.filter { $0.action == #selector(AppDelegate.openLink(_:)) }.count == 5
+                && actionable.filter { $0.action == #selector(AppDelegate.openProviderApp(_:)) }.count == 2
+                && menu.items[11].action == #selector(AppDelegate.refresh)
+                && menu.items[12].action == #selector(AppDelegate.showSettings)
+                && actionable.filter { $0.action != #selector(NSApplication.terminate(_:)) }
+                  .allSatisfy { $0.target === menuDelegate },
+              "menu-actions-copy", "selectors-targets", "selector/target wiring changed")
+  let providerActionRows = actionable.filter {
+    $0.action == #selector(AppDelegate.openLink(_:))
+      || $0.action == #selector(AppDelegate.openProviderApp(_:))
+  }
+  try require(providerActionRows.allSatisfy {
+                  ($0.representedObject as? String)?.hasPrefix("https://") == true
+                    || ($0.representedObject as? String)?.hasPrefix("/") == true
+                }
+                && providerActionRows.allSatisfy {
+                  $0.toolTip?.isEmpty == false && $0.accessibilityLabel()?.isEmpty == false
+                },
+              "menu-actions-copy", "represented-tooltip-accessibility",
+              "provider action metadata changed")
+  let gaugeRows = menu.items.filter {
+    ($0.representedObject as? String) == CLAUDE_USAGE_URL
+      || ($0.representedObject as? String) == CODEX_USAGE_URL
+  }.filter { $0.title.contains("▕") }
+  try require(gaugeRows.count == 3 && gaugeRows.allSatisfy {
+                  $0.accessibilityLabel()?.contains("75% remaining") == true
+                    || $0.accessibilityLabel()?.contains("50% remaining") == true
+                }
+                && gaugeRows.allSatisfy {
+                  $0.accessibilityLabel()?.contains("5h") == true
+                    || $0.accessibilityLabel()?.contains("week") == true
+                }
+                && gaugeRows.filter { ($0.representedObject as? String) == CLAUDE_USAGE_URL }
+                  .allSatisfy { $0.accessibilityHelp() == "Open Claude usage" }
+                && gaugeRows.filter { ($0.representedObject as? String) == CODEX_USAGE_URL }
+                  .allSatisfy { $0.accessibilityHelp() == "Open Codex usage" },
+              "menu-actions-copy", "gauge-accessibility-semantics",
+              "gauge metric/remaining label or provider-specific action help changed")
+  guard let codexHeader = menu.items.first(where: {
+          ($0.representedObject as? String) == CODEX_USAGE_URL
+        }),
+        let codexApp = menu.items.first(where: {
+          ($0.representedObject as? String) == apps[.codex]?.path
+        })
+  else {
+    throw CoreSelfTestFailure(group: "menu-actions-copy", check: "codex-actions",
+                              detail: "Codex action rows missing")
+  }
+  menuDelegate.openLink(codexHeader)
+  menuDelegate.openProviderApp(codexApp)
+  try require(opened == [URL(string: CLAUDE_USAGE_URL)!, apps[.claude]!,
+                         URL(string: CODEX_USAGE_URL)!, apps[.codex]!],
+              "menu-actions-copy", "recorded-invocations", "recorded provider actions differ")
+  let cachedSnapshot = Snapshot(
+    now: now, usage: ClaudeUsage(measuredAt: now - 120, live: false,
+                                 fiveHour: usage.fiveHour, weekly: nil, fable: nil),
+    block: nil, models: nil,
+    codex: CodexUsage(measuredAt: now - 120, live: false, limitId: nil, plan: nil,
+                      primary: codex.primary, secondary: nil, credits: nil),
+    update: (nil, false))
+  let cachedMenu = buildMenu(cachedSnapshot, swiftBarDup: false, target: menuDelegate,
+                             assets: assets, language: "en")
+  try require(cachedMenu.items.filter { $0.title.contains("cached 2m ago") }.count == 2,
+              "menu-actions-copy", "cached-providers", "cached rows missing")
+  let block = ClaudeBlock(elapsedPct: 40, remainMin: 12, cost: 1.5,
+                          tokens: 2_000, costPerHour: 3)
+  let blockCreditsSnapshot = Snapshot(
+    now: now, usage: nil, block: block, models: nil,
+    codex: CodexUsage(measuredAt: now, live: true, limitId: nil, plan: nil,
+                      primary: nil, secondary: nil,
+                      credits: CodexCredits(hasCredits: false, unlimited: false, balance: nil)),
+    update: (nil, false))
+  let blockCreditsMenu = buildMenu(blockCreditsSnapshot, swiftBarDup: false,
+                                   target: menuDelegate, assets: assets, language: "en")
+  try require(blockCreditsMenu.items.contains { $0.title.contains("this block") }
+                && blockCreditsMenu.items.contains { $0.title.contains("credits  exhausted") },
+              "menu-actions-copy", "block-credits", "block/credits rows missing")
+  let claudeOnly = buildMenu(
+    Snapshot(now: now, usage: usage, block: nil, models: nil, codex: nil,
+             update: (nil, false)),
+    swiftBarDup: false, target: menuDelegate, assets: assets, language: "en")
+  let noProvider = buildMenu(
+    Snapshot(now: now, usage: nil, block: nil, models: nil, codex: nil,
+             update: (nil, false)),
+    swiftBarDup: false, target: menuDelegate, assets: assets, language: "en")
+  try require(claudeOnly.items.first?.title.hasPrefix("Claude Code") == true
+                && !claudeOnly.items.contains { $0.title.hasPrefix("Codex") }
+                && noProvider.items.first?.title
+                  == "Run Claude Code or Codex and usage will appear here",
+              "menu-actions-copy", "one-no-provider", "one/no-provider hierarchy changed")
+  print("self-test-core: menu-actions-copy PASS")
+
+  var completions: [(Snapshot) -> Void] = []
+  var menus: [NSMenu] = []
+  var outputs: [StaticStatusOutput] = []
+  var accessibilitySummaries: [String] = []
+  let refreshResolver = CoreSelfTestAssetResolver(apps: [:])
+  let refreshAssets = ProviderAssetContext(resolver: refreshResolver)
+  let refreshDelegate = AppDelegate(
+    presentationConfiguration: configuration,
+    collector: { completions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { true }, glintIntervalReader: { 30 },
+    motionNotificationCenter: NotificationCenter())
+  refreshDelegate.menuSink = { menus.append($0) }
+  refreshDelegate.staticOutputSink = { outputs.append($0) }
+  refreshDelegate.accessibilitySummarySink = { accessibilitySummaries.append($0) }
+  let retainedUsage = ClaudeUsage(
+    measuredAt: now - 30, live: true,
+    fiveHour: UsageWindow(pct: 11, resetsAt: now + 111),
+    weekly: UsageWindow(pct: 22, resetsAt: now + 222),
+    fable: FableWindow(pct: 33, resetsAt: now + 333, model: "prior-fable"))
+  let retainedCodex = CodexUsage(
+    measuredAt: now - 45, live: true, limitId: "prior-limit", plan: "prior-plan",
+    primary: CodexWindow(usedPercent: 44, resetsAt: now + 444),
+    secondary: CodexWindow(usedPercent: 55, resetsAt: now + 555),
+    credits: CodexCredits(hasCredits: true, unlimited: false, balance: 12.5))
+  let retainedPrior = Snapshot(
+    now: now, usage: retainedUsage,
+    block: ClaudeBlock(elapsedPct: 12, remainMin: 34, cost: 5.6, tokens: 789,
+                       costPerHour: 1.2),
+    models: (models: [ModelUse(name: "prior-model", cost: 3.4, tokens: 567)], total: 3.4),
+    codex: retainedCodex, update: ("prior-version", false))
+  refreshDelegate.requestRefresh(.timer)
+  refreshDelegate.requestRefresh(.manual)
+  refreshDelegate.requestRefresh(.timer)
+  try require(completions.count == 1, "refresh-retention", "single-active", "more than one collection started")
+  completions[0](snapshot)
+  try require(completions.count == 2 && menus.isEmpty && outputs.isEmpty,
+              "refresh-retention", "superseded", "superseded completion rendered")
+  refreshDelegate.requestRefresh(.manual)
+  refreshDelegate.requestRefresh(.timer)
+  try require(completions.count == 2 && menus.isEmpty && outputs.isEmpty,
+              "refresh-retention", "active-trailing-replacement",
+              "request queued while trailing collection was active started early")
+  completions[1](snapshot)
+  try require(completions.count == 3 && menus.isEmpty && outputs.isEmpty
+                && accessibilitySummaries.isEmpty,
+              "refresh-retention", "active-trailing-superseded",
+              "superseded trailing generation rendered or failed to start newest replacement")
+  completions[2](retainedPrior)
+  try require(refreshDelegate.acceptedRenderCount == 1 && menus.count == 1 && outputs.count == 1
+                && accessibilitySummaries.count == 1
+                && accessibilitySummaries[0].contains("Claude 5h, 89% remaining")
+                && accessibilitySummaries[0].contains("Codex 5h, 56% remaining")
+                && refreshDelegate.acceptedGenerations == [RefreshGeneration(value: 5)]
+                && refreshDelegate.acceptedRefreshTriggers == [.timer],
+              "refresh-retention", "accepted-newest-trailing",
+              "newest replacement generation did not apply exactly once")
+  completions[2](snapshot)
+  try require(refreshDelegate.acceptedRenderCount == 1 && menus.count == 1 && outputs.count == 1
+                && accessibilitySummaries.count == 1,
+              "refresh-retention", "stale-duplicate", "duplicate completion rendered")
+  refreshDelegate.requestRefresh(.manual)
+  let incomingBlock = ClaudeBlock(elapsedPct: 67, remainMin: 89, cost: 10.1, tokens: 2_345,
+                                  costPerHour: 6.7)
+  let incomingModels = (
+    models: [
+      ModelUse(name: "incoming-alpha", cost: 7.8, tokens: 901),
+      ModelUse(name: "incoming-beta", cost: 2.3, tokens: 456),
+    ],
+    total: 10.1
+  )
+  let missing = Snapshot(now: now + 120, usage: nil, block: incomingBlock,
+                         models: incomingModels, codex: nil, update: ("9.9.9", true))
+  completions[3](missing)
+  let retained = refreshDelegate.lastSnap
+  try require(retained?.now == now + 120
+                && retained?.usage?.measuredAt == now - 30
+                && retained?.usage?.live == false
+                && retained?.usage?.fiveHour?.pct == 11
+                && retained?.usage?.fiveHour?.resetsAt == now + 111
+                && retained?.usage?.weekly?.pct == 22
+                && retained?.usage?.weekly?.resetsAt == now + 222
+                && retained?.usage?.fable?.pct == 33
+                && retained?.usage?.fable?.resetsAt == now + 333
+                && retained?.usage?.fable?.model == "prior-fable"
+                && retained?.codex?.measuredAt == now - 45
+                && retained?.codex?.live == false
+                && retained?.codex?.limitId == "prior-limit"
+                && retained?.codex?.plan == "prior-plan"
+                && retained?.codex?.primary?.usedPercent == 44
+                && retained?.codex?.primary?.resetsAt == now + 444
+                && retained?.codex?.secondary?.usedPercent == 55
+                && retained?.codex?.secondary?.resetsAt == now + 555
+                && retained?.codex?.credits?.hasCredits == true
+                && retained?.codex?.credits?.unlimited == false
+                && retained?.codex?.credits?.balance == 12.5
+                && retained?.block?.elapsedPct == 67
+                && retained?.block?.remainMin == 89
+                && retained?.block?.cost == 10.1
+                && retained?.block?.tokens == 2_345
+                && retained?.block?.costPerHour == 6.7
+                && retained?.models?.models.map(\.name)
+                  == ["incoming-alpha", "incoming-beta"]
+                && retained?.models?.models.map(\.cost) == [7.8, 2.3]
+                && retained?.models?.models.map(\.tokens) == [901, 456]
+                && retained?.models?.total == 10.1
+                && retained?.update.latest == "9.9.9"
+                && retained?.update.hasUpdate == true
+                && refreshDelegate.acceptedRenderCount == 2,
+              "refresh-retention", "provider-retention",
+              "retained provider or newest ancillary fields differed")
+  try require(menus[1].items.filter { $0.title.contains("cached 2m ago") }.count == 2
+                && refreshDelegate.acceptedGenerations.map(\.value) == [5, 6]
+                && refreshDelegate.acceptedRefreshTriggers == [.timer, .manual],
+              "refresh-retention", "accepted-sinks-generations",
+              "accepted retained menu/generation trace differs")
+  let countBeforeRerender = refreshDelegate.acceptedRenderCount
+  refreshDelegate.rerender()
+  try require(refreshDelegate.acceptedRenderCount == countBeforeRerender,
+              "refresh-retention", "rerender-not-accept", "UI rerender incremented acceptance")
+  if case .image(let image) = outputs[0] {
+    try require(image.size.width > 0 && image.size.height > 0,
+                "refresh-retention", "real-static-output", "static image is empty")
+  } else {
+    throw CoreSelfTestFailure(group: "refresh-retention", check: "real-static-output",
+                              detail: "expected rendered image")
+  }
+  func exerciseRefreshOrder(_ first: RefreshTrigger, _ second: RefreshTrigger) throws {
+    var orderCompletions: [(Snapshot) -> Void] = []
+    var orderMenus: [NSMenu] = []
+    var orderOutputs: [StaticStatusOutput] = []
+    let delegate = AppDelegate(
+      presentationConfiguration: configuration,
+      collector: { orderCompletions.append($0) },
+      assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+      reduceMotionReader: { true }, motionNotificationCenter: NotificationCenter())
+    delegate.menuSink = { orderMenus.append($0) }
+    delegate.staticOutputSink = { orderOutputs.append($0) }
+    delegate.requestRefresh(first)
+    delegate.requestRefresh(second)
+    orderCompletions[0](snapshot)
+    try require(orderCompletions.count == 2 && orderMenus.isEmpty && orderOutputs.isEmpty,
+                "refresh-retention", "timer-manual-supersession",
+                "superseded timer/manual completion reached a sink")
+    orderCompletions[1](cachedSnapshot)
+    try require(delegate.acceptedRefreshTriggers == [second]
+                  && delegate.acceptedGenerations.map(\.value) == [2]
+                  && orderMenus.count == 1 && orderOutputs.count == 1
+                  && orderMenus[0].items.contains { $0.title.contains("cached 2m ago") },
+                "refresh-retention", "timer-manual-order",
+                "timer/manual newest accepted preparation or sinks differed")
+  }
+  try exerciseRefreshOrder(.timer, .manual)
+  try exerciseRefreshOrder(.manual, .timer)
+
+  let initialUnavailable = Snapshot(now: now + 120, usage: nil, block: nil, models: nil,
+                                    codex: nil, update: (nil, false))
+
+  var unavailableCompletion: ((Snapshot) -> Void)?
+  var unavailableMenu: NSMenu?
+  var unavailableOutput: StaticStatusOutput?
+  var unavailableAccessibility: String?
+  let unavailableDelegate = AppDelegate(
+    presentationConfiguration: configuration,
+    collector: { unavailableCompletion = $0 },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { true }, motionNotificationCenter: NotificationCenter())
+  unavailableDelegate.menuSink = { unavailableMenu = $0 }
+  unavailableDelegate.staticOutputSink = { unavailableOutput = $0 }
+  unavailableDelegate.accessibilitySummarySink = { unavailableAccessibility = $0 }
+  unavailableDelegate.requestRefresh(.initial)
+  unavailableCompletion?(initialUnavailable)
+  let unavailableIsFallback: Bool
+  if case .fallback("🔋 —")? = unavailableOutput { unavailableIsFallback = true }
+  else { unavailableIsFallback = false }
+  try require(unavailableDelegate.acceptedRefreshTriggers == [.initial]
+                && unavailableDelegate.acceptedGenerations == [RefreshGeneration(value: 1)]
+                && unavailableMenu?.items.first?.title
+                  == "Run Claude Code or Codex and usage will appear here"
+                && unavailableAccessibility
+                  == "Run Claude Code or Codex and usage will appear here"
+                && unavailableIsFallback,
+              "refresh-retention", "initial-unavailable",
+              "initial unavailable accepted sinks differed")
+  print("self-test-core: refresh-retention PASS")
+
+  let motionFlag = CoreSelfTestFlag(false)
+  let motionMode = CoreSelfTestBox("pixel")
+  let motionCat = CoreSelfTestBox(CatStyle.nyan)
+  let motionConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { motionMode.value },
+    catStyle: { motionCat.value }, batterySize: { "big" },
+    goldTestEnabled: { false }, forcedCatState: { nil }, language: { "en" })
+  let center = NotificationCenter()
+  let motionFactory = CoreSelfTestVisualTimerFactory()
+  var motionMenus: [NSMenu] = []
+  var motionOutputs: [StaticStatusOutput] = []
+  var motionAccessibility: [String] = []
+  var motionCompletions: [(Snapshot) -> Void] = []
+  let inertMonitor = NSObject()
+  let motionDelegate = AppDelegate(
+    presentationConfiguration: motionConfiguration,
+    collector: { motionCompletions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { motionFlag.value }, glintIntervalReader: { 30 },
+    motionNotificationCenter: center, visualTimerFactory: motionFactory.make,
+    allowsHeadlessVisualResources: true, providerMonitorIdentity: inertMonitor)
+  motionDelegate.menuSink = { motionMenus.append($0) }
+  motionDelegate.staticOutputSink = { motionOutputs.append($0) }
+  motionDelegate.accessibilitySummarySink = { motionAccessibility.append($0) }
+  let refreshTimer = Timer(timeInterval: 600, repeats: true) { _ in }
+  motionDelegate.timer = refreshTimer
+  motionDelegate.apiActiveProviders = [.claude, .codex]
+  motionDelegate.updateActivityAnimation()
+  motionDelegate.requestRefresh(.initial)
+  motionCompletions[0](snapshot)
+  let pixelResources = motionDelegate.visualResourceSnapshot()
+  try require(pixelResources.animationTimer != nil && pixelResources.catTimer != nil
+                && pixelResources.glintTimer != nil && pixelResources.activityLayers.isEmpty,
+              "reduce-motion", "pixel-eligible-resources",
+              "pixel presentation did not install only eligible resources")
+  let initialAccessibility = motionDelegate.appliedAccessibilitySummary
+  let initialAccessibilitySinkCount = motionAccessibility.count
+  let initialOutputSinkCount = motionOutputs.count
+  let liveTimers = motionFactory.resources.filter {
+    $0.kind == .animation || $0.kind == .cat || $0.kind == .glint
+  }
+  try require([VisualTimerKind.animation, .cat, .glint].allSatisfy { kind in
+                  liveTimers.filter { $0.kind == kind }.count == 1
+                },
+              "reduce-motion", "stale-callback-fixtures",
+              "pixel presentation did not expose exactly one callback of every timer kind")
+  liveTimers.forEach { $0.fireEvenIfInvalid() }
+  try require(initialAccessibility?.contains("Claude 5h, 75% remaining") == true
+                && motionDelegate.appliedAccessibilitySummary == initialAccessibility
+                && motionAccessibility.count == initialAccessibilitySinkCount
+                && motionOutputs.count == initialOutputSinkCount
+                && liveTimers.allSatisfy {
+                  $0.callbackAttempts == 1 && $0.effectBegins == 1
+                },
+              "reduce-motion", "animation-accessibility-continuity",
+              "valid production timer callbacks did not cross the observable effect boundary")
+  let staleTimers = liveTimers
+  let acceptedCount = motionDelegate.acceptedRenderCount
+  let outputCountBeforeEnable = motionOutputs.count
+  let accessibilityCountBeforeEnable = motionAccessibility.count
+  motionFlag.value = true
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  let reducedResources = motionDelegate.visualResourceSnapshot()
+  try require(reducedResources.animationTimer == nil && reducedResources.catTimer == nil
+                && reducedResources.glintTimer == nil && reducedResources.activityLayers.isEmpty
+                && reducedResources.epoch > pixelResources.epoch
+                && motionOutputs.count == outputCountBeforeEnable + 1
+                && motionAccessibility.count == accessibilityCountBeforeEnable + 1
+                && motionDelegate.appliedAccessibilitySummary == initialAccessibility,
+              "reduce-motion", "mid-motion-cancellation",
+              "enabling Reduce Motion did not cancel motion and reapply static output exactly once")
+  let enabledOutputCount = motionOutputs.count
+  let enabledAccessibilityCount = motionAccessibility.count
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  try require(motionDelegate.visualResourceSnapshot() == reducedResources
+                && motionOutputs.count == enabledOutputCount
+                && motionAccessibility.count == enabledAccessibilityCount
+                && motionDelegate.acceptedRenderCount == acceptedCount,
+              "reduce-motion", "enable-idempotent-identity",
+              "same-value notification changed resource identity/count")
+
+  motionMode.value = "modern"
+  motionCat.value = .none
+  motionDelegate.apiActiveProviders = [.claude]
+  motionDelegate.updateActivityAnimation()
+  motionDelegate.rerender()
+  let reducedModernOne = motionDelegate.visualResourceSnapshot()
+  motionCat.value = .nyan
+  motionDelegate.apiActiveProviders = [.claude, .codex]
+  motionDelegate.updateActivityAnimation()
+  motionDelegate.rerender()
+  let reducedModernTwo = motionDelegate.visualResourceSnapshot()
+  try require(reducedModernOne.animationTimer == nil && reducedModernOne.catTimer == nil
+                && reducedModernOne.glintTimer == nil && reducedModernOne.activityLayers.isEmpty
+                && reducedModernTwo.animationTimer == nil && reducedModernTwo.catTimer == nil
+                && reducedModernTwo.glintTimer == nil && reducedModernTwo.activityLayers.isEmpty,
+              "reduce-motion", "reduced-config-activity-suppression",
+              "reduced config/cat/activity changes created visual resources")
+
+  let menuCountBeforeRefresh = motionMenus.count
+  let outputCountBeforeRefresh = motionOutputs.count
+  let accessibilityCountBeforeRefresh = motionAccessibility.count
+  motionDelegate.requestRefresh(.timer)
+  motionCompletions[1](cachedSnapshot)
+  let reducedAfterRefresh = motionDelegate.visualResourceSnapshot()
+  try require(motionDelegate.reduceMotionEnabled
+                && motionDelegate.acceptedRenderCount == acceptedCount + 1
+                && motionDelegate.acceptedRefreshTriggers == [.initial, .timer]
+                && motionMenus.count == menuCountBeforeRefresh + 1
+                && (motionMenus.last?.items.contains {
+                  $0.title.contains("cached 2m ago")
+                }) == true
+                && motionOutputs.count == outputCountBeforeRefresh + 1
+                && motionAccessibility.count == accessibilityCountBeforeRefresh + 1
+                && motionAccessibility.last == motionDelegate.appliedAccessibilitySummary
+                && (motionDelegate.appliedAccessibilitySummary?
+                  .contains("Claude, 75% remaining")) == true
+                && reducedAfterRefresh.animationTimer == nil && reducedAfterRefresh.catTimer == nil
+                && reducedAfterRefresh.glintTimer == nil
+                && reducedAfterRefresh.activityLayers.isEmpty
+                && reducedAfterRefresh.refreshTimer == ObjectIdentifier(refreshTimer)
+                && reducedAfterRefresh.refreshTimerActive
+                && reducedAfterRefresh.providerMonitor == ObjectIdentifier(inertMonitor)
+                && motionDelegate.providerMonitorIdentity === inertMonitor
+                && motionDelegate.activeProviders == Set([.claude, .codex]),
+              "reduce-motion", "reduced-refresh-nonvisual-continuation",
+              "accepted reduced refresh or nonvisual identities/state changed")
+
+  let stateBeforeStale = motionDelegate.visualResourceSnapshot()
+  let catIndexBeforeStale = motionDelegate.catIdx
+  let menusBeforeStale = motionMenus.count
+  let outputsBeforeStale = motionOutputs.count
+  let accessibilityBeforeStale = motionAccessibility.count
+  staleTimers.forEach { $0.fireEvenIfInvalid() }
+  try require(staleTimers.allSatisfy {
+                  !$0.isValid && $0.callbackAttempts == 2 && $0.effectBegins == 1
+                }
+                && motionDelegate.visualResourceSnapshot() == stateBeforeStale
+                && motionDelegate.catIdx == catIndexBeforeStale
+                && motionMenus.count == menusBeforeStale
+                && motionOutputs.count == outputsBeforeStale
+                && motionAccessibility.count == accessibilityBeforeStale,
+              "reduce-motion", "all-stale-callback-rejection",
+              "invalidated callback crossed an old-epoch effect boundary or changed state")
+
+  motionFlag.value = false
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  let restoredModern = motionDelegate.visualResourceSnapshot()
+  try require(restoredModern.activityLayers.count == 2
+                && restoredModern.animationTimer == nil && restoredModern.catTimer == nil
+                && restoredModern.glintTimer == nil,
+              "reduce-motion", "modern-eligible-restoration",
+              "modern activity layers were not restored only after disabling Reduce Motion")
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  try require(motionDelegate.visualResourceSnapshot() == restoredModern,
+              "reduce-motion", "modern-restoration-idempotence",
+              "same-value disabled notification changed modern resource identity")
+
+  motionFlag.value = true
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  let repeatedReduced = motionDelegate.visualResourceSnapshot()
+  try require(repeatedReduced.activityLayers.isEmpty && repeatedReduced.animationTimer == nil
+                && repeatedReduced.catTimer == nil && repeatedReduced.glintTimer == nil,
+              "reduce-motion", "repeated-reduced-idempotence",
+              "repeated reduced cycle retained visual resources")
+  motionFlag.value = false
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  let repeatedModern = motionDelegate.visualResourceSnapshot()
+  center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  try require(repeatedModern.activityLayers.count == 2
+                && motionDelegate.visualResourceSnapshot() == repeatedModern,
+              "reduce-motion", "modern-repeat-restoration-idempotence",
+              "repeated cycle restored ineligible resources or changed identity")
+
+  motionMode.value = "pixel"
+  motionDelegate.rerender()
+  let finalPixel = motionDelegate.visualResourceSnapshot()
+  try require(finalPixel.activityLayers.isEmpty && finalPixel.catTimer != nil
+                && finalPixel.glintTimer != nil && finalPixel.animationTimer == nil,
+              "reduce-motion", "representation-invalidation",
+              "re-presentation retained resources from the prior mode")
+
+  let launchReducedFactory = CoreSelfTestVisualTimerFactory()
+  var launchReducedCompletion: ((Snapshot) -> Void)?
+  let launchMonitor = NSObject()
+  let launchReduced = AppDelegate(
+    presentationConfiguration: motionConfiguration,
+    collector: { launchReducedCompletion = $0 },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { true }, motionNotificationCenter: NotificationCenter(),
+    visualTimerFactory: launchReducedFactory.make, allowsHeadlessVisualResources: true,
+    providerMonitorIdentity: launchMonitor)
+  launchReduced.menuSink = { _ in }
+  launchReduced.staticOutputSink = { _ in }
+  launchReduced.requestRefresh(.initial)
+  launchReducedCompletion?(snapshot)
+  let launchResources = launchReduced.visualResourceSnapshot()
+  try require(launchReduced.reduceMotionEnabled && launchReducedFactory.resources.isEmpty
+                && launchResources.animationTimer == nil && launchResources.catTimer == nil
+                && launchResources.glintTimer == nil && launchResources.activityLayers.isEmpty
+                && launchResources.providerMonitor == ObjectIdentifier(launchMonitor)
+                && launchReduced.providerMonitorIdentity === launchMonitor,
+              "reduce-motion", "enabled-before-render",
+              "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
+  print("self-test-core: reduce-motion PASS")
+  print("self-test-core: PASS")
+}
+
+if CommandLine.arguments.contains("--self-test-core") {
+  do {
+    try runCoreSelfTest()
+    exit(0)
+  } catch let failure as CoreSelfTestFailure {
+    FileHandle.standardError.write(
+      Data("self-test-core: FAIL: \(failure.group)/\(failure.check): \(failure.detail)\n".utf8))
+    exit(1)
+  } catch {
+    FileHandle.standardError.write(Data("self-test-core: FAIL: internal/unexpected: \(error)\n".utf8))
+    exit(1)
+  }
+}
 // ── --render-glint <path>: saves an intermediate glint frame as PNG (for render verification) ──
 if let idx = CommandLine.arguments.firstIndex(of: "--render-glint"), CommandLine.arguments.count > idx + 1 {
   let items = [BattItem(label: "C5", provider: .claude, remain: 100), BattItem(label: "CW", provider: .claude, remain: 100),

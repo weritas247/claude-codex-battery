@@ -73,10 +73,12 @@ struct UsageColor {
 }
 
 // Single source of truth for both the menu-bar capsule and dropdown gauge.
-func usageColor(_ used: Double) -> UsageColor {
-  if used >= 90 { return UsageColor(r: 255, g: 105, b: 97) }
-  if used >= 70 { return UsageColor(r: 255, g: 179, b: 64) }
-  return UsageColor(r: 116, g: 184, b: 129)
+func usageColor(forRemaining remaining: Double) -> UsageColor {
+  switch remainingBand(remaining) {
+  case .red: return UsageColor(r: 255, g: 105, b: 97)
+  case .amber: return UsageColor(r: 255, g: 179, b: 64)
+  case .green: return UsageColor(r: 116, g: 184, b: 129)
+  }
 }
 
 func hexColor(_ s: String) -> NSColor? {

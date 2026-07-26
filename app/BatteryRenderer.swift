@@ -2,9 +2,77 @@
 // (Builds CGImage directly instead of PNG encoding. Pixel placement matches the JS 1:1)
 import Cocoa
 
-enum Provider: Hashable {
+enum Provider: Hashable, CaseIterable {
   case claude, codex
   var symbolName: String { self == .claude ? "sparkles" : "terminal" }
+}
+
+protocol ProviderAssetResolving {
+  func installedApp(for provider: Provider) -> URL?
+  func providerImage(for provider: Provider, installedApp: URL?) -> NSImage?
+  func applicationImage(for provider: Provider, installedApp: URL?) -> NSImage?
+}
+
+struct ProductionProviderAssetResolver: ProviderAssetResolving {
+  func installedApp(for provider: Provider) -> URL? {
+    installedProviderApp(provider)
+  }
+
+  func providerImage(for provider: Provider, installedApp: URL?) -> NSImage? {
+    if provider == .codex, let installedApp {
+      let image = NSWorkspace.shared.icon(forFile: installedApp.path)
+      image.size = NSSize(width: 16, height: 16)
+      return image
+    }
+    return bundledProviderImage(provider)
+  }
+
+  func applicationImage(for provider: Provider, installedApp: URL?) -> NSImage? {
+    if provider == .claude { return bundledProviderImage(provider) }
+    guard let installedApp else { return nil }
+    let image = NSWorkspace.shared.icon(forFile: installedApp.path)
+    image.size = NSSize(width: 16, height: 16)
+    return image
+  }
+
+  private func bundledProviderImage(_ provider: Provider) -> NSImage? {
+    let name = provider == .claude ? "ClaudeProvider" : "CodexProvider"
+    guard let path = Bundle.main.path(forResource: name, ofType: "svg"),
+          let image = NSImage(contentsOfFile: path) else { return nil }
+    image.size = NSSize(width: 16, height: 16)
+    image.isTemplate = true
+    return image
+  }
+}
+
+struct ProviderAssetContext {
+  let resolver: ProviderAssetResolving
+  private let installedApps: [Provider: URL]
+
+  init(resolver: ProviderAssetResolving) {
+    self.resolver = resolver
+    var installedApps: [Provider: URL] = [:]
+    for provider in Provider.allCases {
+      installedApps[provider] = resolver.installedApp(for: provider)
+    }
+    self.installedApps = installedApps
+  }
+
+  static func production() -> ProviderAssetContext {
+    ProviderAssetContext(resolver: ProductionProviderAssetResolver())
+  }
+
+  func installedApp(for provider: Provider) -> URL? {
+    installedApps[provider]
+  }
+
+  func providerImage(for provider: Provider) -> NSImage? {
+    resolver.providerImage(for: provider, installedApp: installedApp(for: provider))
+  }
+
+  func applicationImage(for provider: Provider) -> NSImage? {
+    resolver.applicationImage(for: provider, installedApp: installedApp(for: provider))
+  }
 }
 
 struct BattItem {
@@ -18,7 +86,7 @@ struct ProviderSummary {
   let remain: Double
 }
 
-private func drawProviderGlyph(_ provider: Provider, at point: NSPoint, color: NSColor) {
+private func drawProviderGlyph(_ provider: Provider, at point: NSPoint) {
   let providerColor = provider == .claude
     ? NSColor(calibratedRed: 0.88, green: 0.42, blue: 0.25, alpha: 1)
     : NSColor(calibratedRed: 0.18, green: 0.62, blue: 0.78, alpha: 1)
@@ -44,17 +112,8 @@ private func drawProviderGlyph(_ provider: Provider, at point: NSPoint, color: N
   }
 }
 
-private func providerAsset(_ provider: Provider) -> NSImage? {
-  if provider == .codex, let app = installedProviderApp(.codex) {
-    let image = NSWorkspace.shared.icon(forFile: app.path)
-    image.size = NSSize(width: 16, height: 16)
-    return image
-  }
-  let name = provider == .claude ? "ClaudeProvider" : "CodexProvider"
-  guard let path = Bundle.main.path(forResource: name, ofType: "svg") else { return nil }
-  let image = NSImage(contentsOfFile: path)
-  image?.isTemplate = true
-  return image
+private func providerAsset(_ provider: Provider, context: ProviderAssetContext) -> NSImage? {
+  context.providerImage(for: provider)
 }
 
 // 4x6 pixel font (big preset)
@@ -169,20 +228,25 @@ private final class Canvas {
 }
 
 // Actual macOS battery indicator colors (Apple HIG system colors)
-private func heatRemain(_ r: Double, dark: Bool) -> RGB {
-  if r <= 20 { return dark ? (255, 69, 58) : (255, 59, 48) } // systemRed
-  if r < 50 { return dark ? (255, 214, 10) : (255, 204, 0) } // systemYellow
-  return dark ? (91, 177, 111) : (96, 176, 113) // muted sage green
+private func heatRemain(_ band: RemainingBand, dark: Bool) -> RGB {
+  switch band {
+  case .red: return dark ? (255, 69, 58) : (255, 59, 48) // systemRed
+  case .amber: return dark ? (255, 214, 10) : (255, 204, 0) // systemYellow
+  case .green: return dark ? (91, 177, 111) : (96, 176, 113) // muted sage green
+  }
 }
 
 // 100% remaining = golden battery (a two-tone gold distinct from the warning yellow)
-func isGolden(_ remain: Double?) -> Bool { (remain ?? 0) >= 99.5 }
+func isGolden(_ remain: Double?) -> Bool {
+  guard let remain, remain.isFinite else { return false }
+  return normalizedRemaining(remain) >= 99.5
+}
 private func goldBase(_ dark: Bool) -> RGB { dark ? (255, 184, 0) : (255, 170, 0) }
 private func goldHi(_ dark: Bool) -> RGB { dark ? (255, 226, 110) : (255, 214, 90) }
 
 // Full span of the glint sweep — the length needed for the diagonal to fully cross the capsule
-func batteryGlintSpan() -> Int {
-  let p = currentBattSize() == "small" ? PRESET_SMALL : PRESET_BIG
+func batteryGlintSpan(configuration: PresentationConfiguration = .production) -> Int {
+  let p = configuration.batterySize() == "small" ? PRESET_SMALL : PRESET_BIG
   return p.bw + p.bh
 }
 
@@ -216,16 +280,17 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
   cv.stroke(x, by, p.bw, p.bh, ink)
   cv.rect(x + p.bw, by + 3, 2, p.bh - 6, ink) // terminal
   guard let remain = remain else { return }
+  let value = normalizedRemaining(remain)
+  let band = remainingBand(value)
   let innerW = p.bw - 4
-  let v = max(0, min(100, remain))
-  let fw = Int((v / 100 * Double(innerW)).rounded())
-  let golden = isGolden(remain)
+  let fw = Int((value / 100 * Double(innerW)).rounded())
+  let golden = isGolden(value)
   if fw > 0 {
     if golden {
       cv.rect(x + 2, by + 2, fw, p.bh - 4, goldBase(dark))
       cv.rect(x + 2, by + 2, fw, 2, goldHi(dark)) // top highlight
     } else {
-      cv.rect(x + 2, by + 2, fw, p.bh - 4, heatRemain(remain, dark: dark))
+      cv.rect(x + 2, by + 2, fw, p.bh - 4, heatRemain(band, dark: dark))
     }
   }
   if golden, let g = glintX {
@@ -237,7 +302,7 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
       }
     }
   }
-  let s = String(Int(v.rounded()))
+  let s = String(Int(value.rounded()))
   let tx = x + (p.bw - numW(p, s)) / 2
   // Pixels over the fill (bright system color) get a dark number, over the empty background get ink → contrast is guaranteed everywhere
   drawNum(cv, p, tx, midY - p.dy, s, ink, (30, 30, 30), x + 2 + fw)
@@ -263,10 +328,11 @@ private func drawCat(_ cv: Canvas, _ x: Int, _ y: Int, _ style: CatStyle, _ stat
 // N capsules + group label (C/X) → NSImage (2x pixels; the caller scales down to the display size)
 // With `cat`, a pixel cat runs at the left edge, facing its battery "finish line".
 func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
-                        cat: CatState? = nil, catFrameIndex: Int = 0) -> NSImage? {
-  let p = currentBattSize() == "small" ? PRESET_SMALL : PRESET_BIG
+                        cat: CatState? = nil, catFrameIndex: Int = 0,
+                        configuration: PresentationConfiguration = .production) -> NSImage? {
+  let p = configuration.batterySize() == "small" ? PRESET_SMALL : PRESET_BIG
   let ink: RGB = dark ? (235, 235, 235) : (45, 45, 45)
-  let catStyle = currentCatStyle()
+  let catStyle = configuration.catStyle()
   let catSpan = (cat != nil && catStyle != .none) ? CAT_W + 3 : 0
   // Compute width (including group label)
   var W = p.pad * 2 + catSpan
@@ -309,63 +375,10 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
   return NSImage(cgImage: cg, size: NSSize(width: cv.w, height: cv.h))
 }
 
-// Modern battery layout: native macOS typography, rounded progress bars, and the value overlaid.
-func renderModernBatteryImage(dark: Bool, items: [BattItem]) -> NSImage? {
-  guard !items.isEmpty else { return nil }
-  let bodyW: CGFloat = 54
-  let bodyH: CGFloat = 20
-  let gap: CGFloat = 7
-  let groupGap: CGFloat = 12
-  var width: CGFloat = 6
-  var previousGroup: Character?
-  for item in items {
-    if let previousGroup, previousGroup != item.label.first { width += groupGap }
-    else if previousGroup != nil { width += gap }
-    width += bodyW + 3
-    previousGroup = item.label.first
-  }
-  let image = NSImage(size: NSSize(width: width, height: 28))
-  image.lockFocus()
-  let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
-  var x: CGFloat = 3
-  previousGroup = nil
-  for item in items {
-    if let previousGroup, previousGroup != item.label.first { x += groupGap }
-    else if previousGroup != nil { x += gap }
-    let rect = NSRect(x: x, y: 4, width: bodyW, height: bodyH)
-    let outline = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
-    ink.setStroke(); outline.lineWidth = 1.5; outline.stroke()
-    let terminal = NSBezierPath(roundedRect: NSRect(x: x + bodyW, y: 10, width: 3, height: 8), xRadius: 1.5, yRadius: 1.5)
-    ink.setFill(); terminal.fill()
-    if let remain = item.remain {
-      let v = max(0, min(100, remain))
-      let fill = NSRect(x: x + 2, y: 6, width: max(0, (bodyW - 4) * v / 100), height: bodyH - 4)
-      let fillPath = NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5)
-      let c = heatRemain(remain, dark: dark)
-      NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255,
-              blue: CGFloat(c.b) / 255, alpha: 1).setFill()
-      fillPath.fill()
-      let period = item.label.contains("5") ? "5h" : item.label == "CF" ? "Fable" : "wk"
-      let value = "\(period) \(Int(v.rounded()))%"
-      let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
-      let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-      let size = (value as NSString).size(withAttributes: attrs)
-      if let symbol = NSImage(systemSymbolName: item.provider.symbolName, accessibilityDescription: nil) {
-        let icon = symbol.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)) ?? symbol
-        icon.isTemplate = true
-        icon.draw(in: NSRect(x: x + 3, y: 8, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
-      }
-      (value as NSString).draw(at: NSPoint(x: x + 16 + (bodyW - 16 - size.width) / 2, y: 8), withAttributes: attrs)
-    }
-    x += bodyW + 3
-    previousGroup = item.label.first
-  }
-  image.unlockFocus()
-  return image
-}
 
 // Provider-first menu bar layout: one compact battery per provider, with detailed windows in the menu.
-func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary]) -> NSImage? {
+func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
+                              assetContext: ProviderAssetContext = .production()) -> NSImage? {
   guard !summaries.isEmpty else { return nil }
   let iconWidth: CGFloat = 13, iconGap: CGFloat = 5, bodyW: CGFloat = 38, bodyH: CGFloat = 18, itemGap: CGFloat = 7
   let itemW = iconWidth + iconGap + bodyW + 3
@@ -380,21 +393,22 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary]) -> NSIma
     ink.setStroke(); outline.lineWidth = 1.0; outline.stroke()
     let terminal = NSBezierPath(roundedRect: NSRect(x: bodyX + bodyW, y: 8, width: 3, height: 8), xRadius: 1.5, yRadius: 1.5)
     ink.setFill(); terminal.fill()
-    let v = max(0, min(100, summary.remain))
-    let fill = NSRect(x: bodyX + 2, y: 5, width: max(0, (bodyW - 4) * v / 100), height: bodyH - 4)
-    let c = heatRemain(summary.remain, dark: dark)
+    let value = normalizedRemaining(summary.remain)
+    let band = remainingBand(value)
+    let fill = NSRect(x: bodyX + 2, y: 5, width: max(0, (bodyW - 4) * value / 100), height: bodyH - 4)
+    let c = heatRemain(band, dark: dark)
     NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1).setFill()
     NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
-    if let icon = providerAsset(summary.provider) {
+    if let icon = providerAsset(summary.provider, context: assetContext) {
       icon.draw(in: NSRect(x: x, y: 5, width: iconWidth, height: iconWidth), from: .zero, operation: .sourceOver, fraction: 1)
     } else {
-      drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5), color: ink)
+      drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5))
     }
-    let value = "\(Int(v.rounded()))%"
+    let valueText = "\(Int(value.rounded()))%"
     let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-    let size = (value as NSString).size(withAttributes: attrs)
-    (value as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
+    let size = (valueText as NSString).size(withAttributes: attrs)
+    (valueText as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
     x += itemW
     if index < summaries.count - 1 { x += itemGap }
   }
