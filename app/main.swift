@@ -1961,6 +1961,22 @@ private func runCoreSelfTest() throws {
 
   print("self-test-core: drain-hatch PASS")
 
+  // GUI clients launch `codex` with a private CODEX_HOME, so the live rollout jsonl is appended
+  // there while ~/.codex/sessions stays untouched — the monitor has to watch both.
+  try require(codexSessionsRoot(codexHome: "/tmp/orca/home") == "/tmp/orca/home/sessions"
+                && codexSessionsRoot(codexHome: "/tmp/orca/home/") == "/tmp/orca/home/sessions",
+              "activity-roots", "sessions-subtree",
+              "a CODEX_HOME did not resolve to its sessions subtree")
+  try require(activityWatchRoots(default: "/a", discovered: []) == ["/a"]
+                && activityWatchRoots(default: "/a", discovered: ["/b"]) == ["/a", "/b"],
+              "activity-roots", "discovered-appended",
+              "a discovered root was dropped from the watch list")
+  try require(activityWatchRoots(default: "/a", discovered: ["/b", "/a", "/b", ""]) == ["/a", "/b"],
+              "activity-roots", "deduped",
+              "duplicate or empty roots survived the merge")
+
+  print("self-test-core: activity-roots PASS")
+
   print("self-test-core: PASS")
 }
 
@@ -2051,39 +2067,108 @@ if CommandLine.arguments.contains("--dump") {
   exit(0)
 }
 
+// Discovery runs on the monitor's utility queue while the scenario mutates it from the main
+// thread, so the fake result needs a lock of its own.
+private final class ActivityTestDiscovery {
+  private let lock = NSLock()
+  private var roots: [Provider: [String]]
+  init(_ roots: [Provider: [String]] = [:]) { self.roots = roots }
+  var value: [Provider: [String]] {
+    get { lock.lock(); defer { lock.unlock() }; return roots }
+    set { lock.lock(); roots = newValue; lock.unlock() }
+  }
+}
+
 // ── --test-activity-monitor: verifies file append → active → idle without touching user sessions ──
 if CommandLine.arguments.contains("--test-activity-monitor") {
-  let root = FileManager.default.temporaryDirectory
+  let base = FileManager.default.temporaryDirectory
     .appendingPathComponent("ccb-activity-\(UUID().uuidString)", isDirectory: true)
-  let claudeRoot = root.appendingPathComponent("claude", isDirectory: true)
-  let codexRoot = root.appendingPathComponent("codex", isDirectory: true)
-  try FileManager.default.createDirectory(at: claudeRoot, withIntermediateDirectories: true)
-  try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
-  let session = codexRoot.appendingPathComponent("session.jsonl")
-  try Data("{}\n".utf8).write(to: session)
-
-  var events: [String] = []
-  let monitor = ProviderActivityMonitor(roots: [.claude: claudeRoot.path, .codex: codexRoot.path]) {
-    provider, active in
-    let event = "\(provider == .claude ? "claude" : "codex"):\(active ? "active" : "idle")"
-    events.append(event)
-    print(event)
+  func makeRoot(_ name: String) throws -> URL {
+    let url = base.appendingPathComponent(name, isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
   }
-  monitor.start()
-  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-    if let handle = try? FileHandle(forWritingTo: session) {
-      _ = try? handle.seekToEnd()
-      try? handle.write(contentsOf: Data("{\"delta\":1}\n".utf8))
-      try? handle.close()
+  func seedSession(_ root: URL) throws -> URL {
+    let file = root.appendingPathComponent("session.jsonl")
+    try Data("{}\n".utf8).write(to: file)
+    return file
+  }
+  func appendSession(_ file: URL) {
+    guard let handle = try? FileHandle(forWritingTo: file) else { return }
+    _ = try? handle.seekToEnd()
+    try? handle.write(contentsOf: Data("{\"delta\":1}\n".utf8))
+    try? handle.close()
+  }
+  // Runs a monitor over temp roots, performs `work` mid-flight, and returns the events it emitted.
+  func observe(_ name: String, roots: [Provider: String], discovery: ActivityTestDiscovery,
+               seconds: TimeInterval, work: @escaping () -> Void) -> [String] {
+    var events: [String] = []
+    let monitor = ProviderActivityMonitor(roots: roots, discovery: { discovery.value }) {
+      provider, active in
+      events.append("\(provider == .claude ? "claude" : "codex"):\(active ? "active" : "idle")")
     }
+    monitor.start()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    monitor.stop()
+    print("activity-monitor: \(name) events \(events)")
+    return events
   }
-  RunLoop.main.run(until: Date().addingTimeInterval(7.5))
-  monitor.stop()
-  try? FileManager.default.removeItem(at: root)
-  let passed = events.contains("codex:active") && events.contains("codex:idle")
-    && !events.contains("claude:active")
-  print(passed ? "activity-monitor: PASS" : "activity-monitor: FAIL")
-  exit(passed ? 0 : 1)
+  var failures: [String] = []
+  func check(_ name: String, _ passed: Bool) {
+    print("activity-monitor: \(name) \(passed ? "PASS" : "FAIL")")
+    if !passed { failures.append(name) }
+  }
+
+  // 1. The default root: an append there still drives active → idle, and Claude stays quiet.
+  let claudeRoot = try makeRoot("claude")
+  let codexRoot = try makeRoot("codex")
+  let defaultSession = try seedSession(codexRoot)
+  let defaultEvents = observe("default-root",
+                              roots: [.claude: claudeRoot.path, .codex: codexRoot.path],
+                              discovery: ActivityTestDiscovery(), seconds: 7.5) {
+    appendSession(defaultSession)
+  }
+  check("default-root", defaultEvents.contains("codex:active")
+          && defaultEvents.contains("codex:idle") && !defaultEvents.contains("claude:active"))
+
+  // 2. The regression: the session lives only under a discovered root (a GUI client's CODEX_HOME),
+  //    and the default root never changes.
+  let emptyCodexRoot = try makeRoot("codex-empty")
+  let orcaRoot = try makeRoot("orca/sessions")
+  let orcaSession = try seedSession(orcaRoot)
+  let orcaEvents = observe("discovered-root",
+                           roots: [.claude: claudeRoot.path, .codex: emptyCodexRoot.path],
+                           discovery: ActivityTestDiscovery([.codex: [orcaRoot.path]]),
+                           seconds: 3.5) { appendSession(orcaSession) }
+  check("discovered-root",
+        orcaEvents.contains("codex:active") && !orcaEvents.contains("claude:active"))
+
+  // 3. A codex process started after the monitor did: discovery has to re-run, not just run once.
+  let lateCodexRoot = try makeRoot("codex-late-default")
+  let lateRoot = try makeRoot("late/sessions")
+  let lateDiscovery = ActivityTestDiscovery()
+  let lateEvents = observe("late-discovery",
+                           roots: [.claude: claudeRoot.path, .codex: lateCodexRoot.path],
+                           discovery: lateDiscovery, seconds: 7.5) {
+    _ = try? seedSession(lateRoot)
+    lateDiscovery.value = [.codex: [lateRoot.path]]
+  }
+  check("late-discovery", lateEvents.contains("codex:active"))
+
+  // 4. Discovery repeating the default root must not double-report or otherwise misbehave.
+  let dupRoot = try makeRoot("codex-dup")
+  let dupSession = try seedSession(dupRoot)
+  let dupEvents = observe("duplicate-discovery",
+                          roots: [.claude: claudeRoot.path, .codex: dupRoot.path],
+                          discovery: ActivityTestDiscovery([.codex: [dupRoot.path]]),
+                          seconds: 3.5) { appendSession(dupSession) }
+  check("duplicate-discovery", dupEvents == ["codex:active"])
+
+  try? FileManager.default.removeItem(at: base)
+  print(failures.isEmpty ? "activity-monitor: PASS"
+          : "activity-monitor: FAIL (\(failures.joined(separator: ", ")))")
+  exit(failures.isEmpty ? 0 : 1)
 }
 
 // ── Duplicate-launch guard — quits silently if an instance with the same bundle ID is already running ──
