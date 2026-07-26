@@ -254,6 +254,14 @@ let HATCH_PITCH_PX = 3            // pixel canvas is in logical px (Canvas.SCALE
 let HATCH_STRIPE_PX = 1
 let HATCH_TICK_INTERVAL: TimeInterval = 0.2   // one logical px per tick → a full pitch in HATCH_PERIOD
 
+// Fraction of the capsule interior the fill needs before the stripes can run inside it (modern:
+// 6pt of a 34pt interior). Tied to the interior so both modes fall back at the same remaining
+// ratio; the floor keeps at least one stripe column per row on the pixel canvas.
+let HATCH_MIN_FILL_RATIO = 6.0 / 34
+func hatchCoversFill(fill: Double, interior: Double) -> Bool {
+  fill >= max(Double(HATCH_PITCH_PX), (interior * HATCH_MIN_FILL_RATIO).rounded())
+}
+
 // Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
 func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
   let base = heatRemain(remainingBand(normalizedRemaining(remain ?? 0)), dark: dark)
@@ -364,7 +372,7 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
   }
   // Drain hatch — skipped while the golden glint sweep owns the capsule
   if let phase = hatchPhase, !(golden && glintX != nil) {
-    let wide = fw >= 6
+    let wide = hatchCoversFill(fill: Double(fw), interior: Double(innerW))
     let hatchW = wide ? fw : p.bw - 4
     let col = wide ? activityHatchRGB(remain, dark: dark) : emptyHatchRGB(dark: dark)
     for j in 0 ..< (p.bh - 4) {

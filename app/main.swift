@@ -468,7 +468,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
       let fillW = max(0, (MODERN_BODY_WIDTH - 4) * normalizedRemaining(summary.remain) / 100)
       // Too little fill to carry the stripes → run them over the whole body so activity stays visible
-      let wide = fillW >= 8
+      let wide = hatchCoversFill(fill: fillW, interior: MODERN_BODY_WIDTH - 4)
       let rect = CGRect(x: bodyX + 2, y: originY + 5,
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
       let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
@@ -1749,6 +1749,17 @@ private func runCoreSelfTest() throws {
   let hatchItems = [BattItem(label: "C5", provider: .claude, remain: 75),
                     BattItem(label: "X5", provider: .codex, remain: 40)]
   func hatchPixels(_ image: NSImage?) -> Data? { image?.tiffRepresentation }
+  func hasColor(_ image: NSImage?, _ rgb: (UInt8, UInt8, UInt8)) -> Bool {
+    guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+          rep.bitsPerPixel == 32, let data = rep.bitmapData else { return false }
+    for y in 0 ..< rep.pixelsHigh {
+      for x in 0 ..< rep.pixelsWide {
+        let p = data + y * rep.bytesPerRow + x * 4
+        if p[3] != 0, p[0] == rgb.0, p[1] == rgb.1, p[2] == rgb.2 { return true }
+      }
+    }
+    return false
+  }
   let hatchPlain = hatchPixels(renderBatteryImage(dark: true, items: hatchItems))
   let hatchOff = hatchPixels(renderBatteryImage(dark: true, items: hatchItems,
                                                 hatchPhase: 0, hatchProviders: []))
@@ -1770,6 +1781,26 @@ private func runCoreSelfTest() throws {
   try require(MODERN_ITEM_WIDTH == 59,
               "drain-hatch", "modern-item-width",
               "modern item width did not match the rendered layout")
+  // Too little fill to carry stripes → the whole interior is hatched in the flat empty tone, so
+  // "in use" stays visible even at 0% remaining
+  let emptyItems = [BattItem(label: "C5", provider: .claude, remain: 0)]
+  let emptyPlain = renderBatteryImage(dark: true, items: emptyItems)
+  let emptyHatched = renderBatteryImage(dark: true, items: emptyItems, hatchPhase: 0,
+                                        hatchProviders: [.claude])
+  try require(hatchPixels(emptyPlain) != nil
+                && hatchPixels(emptyPlain) != hatchPixels(emptyHatched)
+                && hasColor(emptyHatched, emptyHatchRGB(dark: true))
+                && !hasColor(emptyPlain, emptyHatchRGB(dark: true)),
+              "drain-hatch", "low-fill-fallback-pixel",
+              "an empty battery lost the hatch instead of falling back to the empty tone")
+  // Above the fallback threshold the stripes derive from the remaining color — including the red band
+  let redItems = [BattItem(label: "C5", provider: .claude, remain: 20)]
+  let redHatched = renderBatteryImage(dark: true, items: redItems, hatchPhase: 0,
+                                      hatchProviders: [.claude])
+  try require(hasColor(redHatched, activityHatchRGB(20, dark: true))
+                && !hasColor(redHatched, emptyHatchRGB(dark: true)),
+              "drain-hatch", "derived-hatch-red-band-pixel",
+              "a red-band battery fell back to the flat empty tone instead of a derived hatch")
   // ── drain hatch: 픽셀 모션 틱 ──
   let tickFlag = CoreSelfTestFlag(false)
   let tickMode = CoreSelfTestBox("pixel")
@@ -1931,6 +1962,29 @@ private func runCoreSelfTest() throws {
                 && stripesAfterRefresh?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-layer-survives-refresh",
               "a full refresh cycle on an unchanged presentation reset the running drain animation")
+  // The same low-fill fallback as pixel mode: above the threshold the layer tracks the fill in the
+  // derived tone, below it the whole body is hatched in the flat empty tone
+  func hatchModeSnapshot(remaining: Double) -> Snapshot {
+    let usage = ClaudeUsage(measuredAt: now, live: true,
+                            fiveHour: UsageWindow(pct: 100 - remaining, resetsAt: now + 4_000),
+                            weekly: UsageWindow(pct: 100 - remaining, resetsAt: nil), fable: nil)
+    return Snapshot(now: now, usage: usage, block: nil, models: nil, codex: nil,
+                    update: (nil, false))
+  }
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[2](hatchModeSnapshot(remaining: 20))
+  let clipRedBand = hatchModeDelegate.activityLayers[.claude]
+  try require(clipRedBand?.frame.width == (MODERN_BODY_WIDTH - 4) * 20 / 100
+                && clipRedBand?.name?.contains("\(activityHatchRGB(20, dark: true))") == true,
+              "drain-hatch", "derived-hatch-red-band-modern",
+              "a red-band battery fell back to the flat empty tone instead of a derived hatch")
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[3](hatchModeSnapshot(remaining: 0))
+  let clipEmpty = hatchModeDelegate.activityLayers[.claude]
+  try require(clipEmpty?.frame.width == MODERN_BODY_WIDTH - 4
+                && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: true))") == true,
+              "drain-hatch", "low-fill-fallback-modern",
+              "an empty battery did not hatch the whole body in the empty tone")
   hatchModeFlag.value = true
   // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
   // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
