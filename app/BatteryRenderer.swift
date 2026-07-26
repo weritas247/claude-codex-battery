@@ -308,6 +308,33 @@ func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImag
   return ctx.makeImage()
 }
 
+// The percentage drawn inside a modern capsule — shared so the activity layer can redraw it above
+// the hatch with exactly the font and color the button image already used.
+func modernValueAttributes(dark: Bool) -> [NSAttributedString.Key: Any] {
+  let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
+  return [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: ink]
+}
+
+// Just the "NN%" glyphs on transparency, plus the size the caller needs to center them
+func modernValueTextImage(_ value: Double, dark: Bool) -> (image: CGImage, size: CGSize)? {
+  let text = "\(Int(value.rounded()))%" as NSString
+  let attrs = modernValueAttributes(dark: dark)
+  let size = text.size(withAttributes: attrs)
+  let scale: CGFloat = 2   // pairs with contentsScale on the layer that shows this image
+  let pw = Int((size.width * scale).rounded(.up)), ph = Int((size.height * scale).rounded(.up))
+  guard pw > 0, ph > 0,
+        let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+  else { return nil }
+  ctx.scaleBy(x: scale, y: scale)
+  let previous = NSGraphicsContext.current
+  NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+  text.draw(at: .zero, withAttributes: attrs)
+  NSGraphicsContext.current = previous
+  return ctx.makeImage().map { ($0, size) }
+}
+
 func hatchNSColor(_ rgb: (UInt8, UInt8, UInt8), alpha: CGFloat) -> NSColor {
   NSColor(calibratedRed: CGFloat(rgb.0) / 255, green: CGFloat(rgb.1) / 255,
           blue: CGFloat(rgb.2) / 255, alpha: alpha)
@@ -500,8 +527,7 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
       drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5))
     }
     let valueText = "\(Int(value.rounded()))%"
-    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+    let attrs = modernValueAttributes(dark: dark)
     let size = (valueText as NSString).size(withAttributes: attrs)
     (valueText as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
     x += itemW
