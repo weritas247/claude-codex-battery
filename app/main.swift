@@ -1994,6 +1994,67 @@ private func runCoreSelfTest() throws {
 
   print("self-test-core: activity-roots PASS")
 
+  // Nothing else reaches the KERN_PROCARGS2 parser — the monitor's tests inject discovery — and a
+  // regression in it fails silently: no roots, no animation, no error.
+  // Mirrors the layout measured off live processes. `tail: false` models the argv-only buffer the
+  // kernel returns for a binary whose environment it withholds, and the short read of a cut-off
+  // value; with an environment present, the apple[] strings sit past its empty terminator.
+  func procArgs(argc: Int32, exec: String = "/bin/codex", argv: [String] = ["codex"],
+                env: [String], tail: Bool = true) -> [UInt8] {
+    var bytes = [UInt8]()
+    withUnsafeBytes(of: argc) { bytes.append(contentsOf: $0) }
+    bytes.append(contentsOf: Array(exec.utf8))
+    bytes.append(contentsOf: [UInt8](repeating: 0, count: 4)) // terminator + alignment padding
+    for entry in argv + env {
+      bytes.append(contentsOf: Array(entry.utf8))
+      bytes.append(0)
+    }
+    if tail {
+      bytes.append(0) // the empty string that separates the environment from apple[]
+      bytes.append(contentsOf: Array("executable_path=/bin/codex".utf8))
+      bytes.append(0)
+    } else if !env.isEmpty {
+      bytes.removeLast(1) // last value left unterminated, as a short read leaves it
+    }
+    return bytes
+  }
+  let procArgsHome = procArgs(argc: 1, env: ["PATH=/bin", "CODEX_HOME=/tmp/orca/home", "TERM=xterm"])
+  try require(parseProcArgs(procArgsHome, key: "CODEX_HOME").value == "/tmp/orca/home"
+                && parseProcArgs(procArgsHome, key: "CODEX_HOME").envEntries == 2,
+              "procargs", "reads-key", "a key in the environment was not read back")
+  try require(parseProcArgs(procArgs(argc: 1, env: ["CODEX_HOME=/tmp/a=b/home"]),
+                            key: "CODEX_HOME").value == "/tmp/a=b/home",
+              "procargs", "value-with-equals", "a value containing = was truncated at the wrong =")
+  try require(parseProcArgs(procArgs(argc: 1, env: ["XCODEX_HOME=/no", "CODEX_HOME=/yes"]),
+                            key: "CODEX_HOME").value == "/yes",
+              "procargs", "prefix-collision", "a key that merely ends with the wanted one matched")
+  let procArgsEmpty = parseProcArgs(procArgs(argc: 1, env: [], tail: false), key: "CODEX_HOME")
+  try require(procArgsEmpty.value == nil && procArgsEmpty.envEntries == 0,
+              "procargs", "empty-environment",
+              "a withheld environment did not read back as zero entries")
+  // The environment ends at its empty terminator, so apple[] (ptr_munge, th_port, …) is never read
+  try require(parseProcArgs(procArgs(argc: 1, env: ["A=1", "B=2", "C=3"]),
+                            key: "CODEX_HOME").envEntries == 3,
+              "procargs", "stops-before-apple", "the scan ran past the environment into apple[]")
+  let procArgsCut = procArgs(argc: 1, env: ["CODEX_HOME=/tmp/orca/home"], tail: false)
+  try require(parseProcArgs(Array(procArgsCut.dropLast(5)), key: "CODEX_HOME").value == "/tmp/orca",
+              "procargs", "truncated-buffer",
+              "a buffer cut off mid-value did not yield what was actually read")
+  try require(parseProcArgs(procArgs(argc: 0, argv: [], env: ["CODEX_HOME=/zero"]),
+                            key: "CODEX_HOME").value == "/zero",
+              "procargs", "argc-zero", "argc=0 lost the environment that follows it")
+  // A bogus argc must fall through rather than spin: every step is bounded by the buffer's end
+  try require(parseProcArgs(procArgs(argc: .max, env: ["CODEX_HOME=/huge"]),
+                            key: "CODEX_HOME").value == nil
+                && parseProcArgs(procArgs(argc: -1, env: ["CODEX_HOME=/neg"]),
+                                 key: "CODEX_HOME").value == nil,
+              "procargs", "bogus-argc", "an out-of-range argc was not rejected or absorbed")
+  try require(parseProcArgs([], key: "CODEX_HOME").value == nil
+                && parseProcArgs([1, 2], key: "CODEX_HOME").value == nil,
+              "procargs", "short-buffer", "a buffer smaller than the argc header was not rejected")
+
+  print("self-test-core: procargs PASS")
+
   print("self-test-core: PASS")
 }
 

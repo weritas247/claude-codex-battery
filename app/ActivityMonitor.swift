@@ -87,25 +87,16 @@ private func processName(_ pid: pid_t) -> String? {
   return String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
 }
 
-// KERN_PROCARGS2 lays out: argc (Int32), the exec path, NUL padding, argc argv strings, then the
-// environment. Fails (and so returns nil) for processes owned by another user.
-private func processEnvironmentValue(pid: pid_t, key: String) -> String? {
-  var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+// A KERN_PROCARGS2 buffer lays out: argc (Int32), the exec path, NUL padding, argc argv strings,
+// then the environment, which ends at the first empty string. Pure, so the self-test can drive it
+// with hand-built buffers; `envEntries` is what tells a missing key from a withheld environment.
+func parseProcArgs(_ buffer: [UInt8], key: String) -> (value: String?, envEntries: Int) {
   let header = MemoryLayout<Int32>.size
-  var size = 0
-  guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > header else {
-    activityDebug("discover: pid \(pid) procargs sizing failed errno=\(errno) size=\(size)")
-    return nil
-  }
-  var buffer = [UInt8](repeating: 0, count: size)
-  guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > header else {
-    activityDebug("discover: pid \(pid) procargs read failed errno=\(errno) size=\(size)")
-    return nil
-  }
-  let end = min(size, buffer.count)
+  guard buffer.count > header else { return (nil, 0) }
   var argc: Int32 = 0
   withUnsafeMutableBytes(of: &argc) { $0.copyBytes(from: buffer[0..<header]) }
-  guard argc >= 0 else { return nil }
+  guard argc >= 0 else { return (nil, 0) }
+  let end = buffer.count
 
   var offset = header
   func nextString() -> String? {
@@ -130,11 +121,34 @@ private func processEnvironmentValue(pid: pid_t, key: String) -> String? {
   var entries = 0
   while let entry = nextString(), !entry.isEmpty {
     entries += 1
-    if entry.hasPrefix(prefix) { return String(entry.dropFirst(prefix.count)) }
+    if entry.hasPrefix(prefix) { return (String(entry.dropFirst(prefix.count)), entries) }
   }
-  // Distinguishes "the key is not set" from "the environment came back empty"
-  activityDebug("discover: pid \(pid) has no \(key) among \(entries) env entries (argc=\(argc))")
-  return nil
+  return (nil, entries)
+}
+
+// Returns nil whenever the kernel withholds the environment — another user's process, but also
+// same-user platform and hardened-runtime binaries, which come back argv-only with no env at all.
+// So this can only find a codex home for a binary whose environment is readable; launching the app
+// with CODEX_HOME set is the manual escape hatch (discoverCodexSessionRoots honours ours).
+private func processEnvironmentValue(pid: pid_t, key: String) -> String? {
+  var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+  let header = MemoryLayout<Int32>.size
+  var size = 0
+  guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > header else {
+    activityDebug("discover: pid \(pid) procargs sizing failed errno=\(errno) size=\(size)")
+    return nil
+  }
+  var buffer = [UInt8](repeating: 0, count: size)
+  guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > header else {
+    activityDebug("discover: pid \(pid) procargs read failed errno=\(errno) size=\(size)")
+    return nil
+  }
+  // The second sysctl can report fewer bytes than the first sized for
+  let parsed = parseProcArgs(Array(buffer.prefix(min(size, buffer.count))), key: key)
+  if parsed.value == nil {
+    activityDebug("discover: pid \(pid) has no \(key) among \(parsed.envEntries) env entries")
+  }
+  return parsed.value
 }
 
 // Detects real Claude/Codex work from append-only session logs. This works
@@ -197,9 +211,10 @@ final class ProviderActivityMonitor {
       self.refreshDiscoveryIfDue()
       var latest: [Provider: Fingerprint] = [:]
       for (provider, root) in self.roots {
-        let roots = activityWatchRoots(default: root, discovered: self.discovered[provider] ?? [])
-        let newest = self.newestFingerprint(roots: roots)
-        activityDebug("scan \(activityLabel(provider)) roots=\(roots) newest="
+        let watchRoots = activityWatchRoots(default: root,
+                                            discovered: self.discovered[provider] ?? [])
+        let newest = self.newestFingerprint(roots: watchRoots)
+        activityDebug("scan \(activityLabel(provider)) roots=\(watchRoots) newest="
                         + (newest.map { "\($0.path) mtime=\($0.modifiedAt) size=\($0.size)" }
                             ?? "none"))
         latest[provider] = newest
@@ -227,13 +242,13 @@ final class ProviderActivityMonitor {
   private func newestFingerprint(roots: [String]) -> Fingerprint? {
     var newest: Fingerprint?
     for root in roots {
-      guard let candidate = latestFingerprint(root: root) else { continue }
+      guard let candidate = newestFingerprint(root: root) else { continue }
       if newest == nil || candidate.modifiedAt > newest!.modifiedAt { newest = candidate }
     }
     return newest
   }
 
-  private func latestFingerprint(root: String) -> Fingerprint? {
+  private func newestFingerprint(root: String) -> Fingerprint? {
     let rootURL = URL(fileURLWithPath: root, isDirectory: true)
     let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
     guard let enumerator = FileManager.default.enumerator(
