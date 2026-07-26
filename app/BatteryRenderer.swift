@@ -305,8 +305,11 @@ func modernValueAttributes(dark: Bool) -> [NSAttributedString.Key: Any] {
   return [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: ink]
 }
 
-// Just the "NN%" glyphs on transparency, plus the size the caller needs to center them
-func modernValueTextImage(_ value: Double, dark: Bool) -> (image: CGImage, size: CGSize)? {
+// Just the "NN%" glyphs on transparency, plus the size the caller needs to center them and the
+// size the raster actually covers — the pixel grid rounds up, and a layer sized to `size` instead
+// of `rasterSize` squeezes the glyphs under the default `.resize` contents gravity.
+func modernValueTextImage(_ value: Double, dark: Bool)
+  -> (image: CGImage, size: CGSize, rasterSize: CGSize)? {
   let text = "\(Int(value.rounded()))%" as NSString
   let attrs = modernValueAttributes(dark: dark)
   let size = text.size(withAttributes: attrs)
@@ -322,7 +325,8 @@ func modernValueTextImage(_ value: Double, dark: Bool) -> (image: CGImage, size:
   NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
   text.draw(at: .zero, withAttributes: attrs)
   NSGraphicsContext.current = previous
-  return ctx.makeImage().map { ($0, size) }
+  let rasterSize = CGSize(width: CGFloat(pw) / scale, height: CGFloat(ph) / scale)
+  return ctx.makeImage().map { ($0, size, rasterSize) }
 }
 
 func hatchNSColor(_ rgb: (UInt8, UInt8, UInt8), alpha: CGFloat) -> NSColor {

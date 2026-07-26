@@ -451,7 +451,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let buttonHeight = button?.bounds.height ?? imageHeight
     let originX = max(0, (buttonWidth - imageWidth) / 2)
     let originY = hatchOriginY(buttonHeight: buttonHeight, imageHeight: imageHeight)
-    let dark = button.map { $0.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } ?? true
+    // Same fallback as prepareAndApplyCurrent: no button → light, so the hatch matches the base image
+    let dark = button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
     for provider in [Provider.claude, .codex] {
       guard activeProviders.contains(provider),
@@ -469,42 +470,56 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
       let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
       let alpha: CGFloat = wide ? 0.85 : 0.55
-      // Reuse identity: same clip geometry + same stripe color → keep the running "drain" animation
-      // in place instead of restarting it at t=0 on every icon refresh (setButtonImage runs this
-      // every redraw, not only on real activity transitions).
-      let signature = "\(rect)|\(colorRGB)|\(alpha)"
-      // Centered the way renderModernSummaryImage centers it, so the redraw lands pixel-on-pixel
-      func valueTextFrame(_ size: CGSize) -> CGRect {
-        CGRect(x: bodyX + (MODERN_BODY_WIDTH - size.width) / 2, y: originY + 5,
-               width: size.width, height: size.height)
+      // Rebuild key = exactly what the stripe tile is baked from. Everything else about a refresh —
+      // a narrower fill, a new percentage — is a resize we can apply in place, and must: rebuilding
+      // resets "drain" to t=0, and a draining provider changes its fill on every refresh, which is
+      // precisely when the animation is on screen.
+      let rebuildKey = "\(colorRGB)|\(alpha)"
+      let stripesW = rect.width + HATCH_PITCH_PT
+      // Origin centers the glyphs the way renderModernSummaryImage centers them, so the redraw lands
+      // pixel-on-pixel; the size is the raster's, so .resize gravity doesn't squeeze them.
+      func valueTextFrame(_ text: (image: CGImage, size: CGSize, rasterSize: CGSize)) -> CGRect {
+        CGRect(x: bodyX + (MODERN_BODY_WIDTH - text.size.width) / 2, y: originY + 5,
+               width: text.rasterSize.width, height: text.rasterSize.height)
       }
-      if activityLayers[provider]?.name == signature, let label = activityTextLayers[provider] {
-        // Below the low-fill threshold the signature is value-independent (constant rect, flat empty
-        // tone), so a draining provider would keep painting its old number over the new base image.
-        // Refresh the label in place; the clip and its running "drain" animation stay untouched.
-        // Nil render → keep the previous label, same as the creation path skipping it entirely.
-        if let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark) {
-          CATransaction.begin()
-          CATransaction.setDisableActions(true)   // implicit actions would crossfade the digits
-          label.frame = valueTextFrame(text.size)
-          label.contents = text.image
-          CATransaction.commit()
+      let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark)
+      if let clip = activityLayers[provider], clip.name == rebuildKey,
+         let stripes = clip.sublayers?.first, let label = activityTextLayers[provider] {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)   // implicit actions would slide the resize and crossfade the digits
+        if clip.frame != rect {
+          clip.frame = rect
+          // stripes sits on a left anchor, so its position.x stays 0 and the running drift's
+          // absolute from/to values survive the resize
+          stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
+          stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+                                              color: hatchNSColor(colorRGB, alpha: alpha))
         }
+        // Baked from the value, so it goes stale even when the geometry doesn't move (below the
+        // low-fill threshold the rect is constant for every remaining value in the band)
+        if let text {
+          label.frame = valueTextFrame(text)
+          label.contents = text.image
+        }
+        CATransaction.commit()
         continue
       }
       removeActivityLayers(for: provider)
-      let color = hatchNSColor(colorRGB, alpha: alpha)
+      // No number to redraw above the stripes → install nothing, rather than bury the percentage
+      // under a hatch that would then rebuild on every refresh
+      guard let text else { continue }
 
       let clip = CALayer()
-      clip.name = signature
+      clip.name = rebuildKey
       clip.frame = rect
       clip.masksToBounds = true
       clip.cornerRadius = 2.5
       let stripes = CALayer()
-      stripes.frame = CGRect(x: 0, y: 0, width: rect.width + HATCH_PITCH_PT, height: rect.height)
+      stripes.anchorPoint = CGPoint(x: 0, y: 0.5)   // see the resize path above
+      stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
       stripes.contentsScale = 2
-      stripes.contents = hatchStripeImage(width: rect.width + HATCH_PITCH_PT,
-                                          height: rect.height, color: color)
+      stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+                                          color: hatchNSColor(colorRGB, alpha: alpha))
       clip.addSublayer(stripes)
       button?.layer?.addSublayer(clip)
       activityLayers[provider] = clip
@@ -519,12 +534,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
       // The clip sits above the button image and would stripe the centered "NN%", so the number is
       // redrawn on top of it.
-      guard let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark) else {
-        continue
-      }
       let label = CALayer()
-      label.name = signature
-      label.frame = valueTextFrame(text.size)
+      label.frame = valueTextFrame(text)
       label.contentsScale = 2
       label.contents = text.image
       button?.layer?.addSublayer(label)
@@ -1744,6 +1755,8 @@ private func runCoreSelfTest() throws {
                 && launchReduced.providerMonitorIdentity === launchMonitor,
               "reduce-motion", "enabled-before-render",
               "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
+  print("self-test-core: reduce-motion PASS")
+
   // ── drain hatch: derived colors and shared modern geometry ──
   try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
                 && emptyHatchRGB(dark: true) == (95, 95, 95)
@@ -1792,17 +1805,23 @@ private func runCoreSelfTest() throws {
               "drain-hatch", "modern-layer-geometry",
               "hatch layer geometry did not match the battery fill")
   // The clip layer covers the centered "NN%" in the button image, so the number is redrawn above it
-  // at exactly the rect renderModernSummaryImage put it in
+  // at exactly the origin renderModernSummaryImage drew it from — glyph origin, not box center,
+  // because the layer is sized to the rounded-up raster so .resize gravity can't squeeze it
   let label = hatchModeDelegate.activityTextLayers[.claude]
-  let labelCenterX = MODERN_IMAGE_PAD + MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH / 2
   func textImageHasInk(_ value: Double) -> Bool {
-    guard let text = modernValueTextImage(value, dark: true),
+    guard let text = modernValueTextImage(value, dark: false),
           let pixels = text.image.dataProvider?.data else { return false }
     return (pixels as Data).contains { $0 != 0 }
   }
+  let labelText = modernValueTextImage(50, dark: false)
+  let labelOriginX = MODERN_IMAGE_PAD + MODERN_ICON_WIDTH + MODERN_ICON_GAP
+    + (MODERN_BODY_WIDTH - (labelText?.size.width ?? 0)) / 2
   try require(label?.contents != nil && (label?.frame.width ?? 0) > 0 && textImageHasInk(50)
                 && label?.frame.minY == clip?.frame.minY
-                && abs((label?.frame.midX ?? 0) - labelCenterX) < 0.001,
+                && labelText != nil
+                && label?.frame.width == labelText?.rasterSize.width
+                && label?.frame.height == labelText?.rasterSize.height
+                && abs((label?.frame.minX ?? 0) - labelOriginX) < 0.001,
               "drain-hatch", "modern-text-layer-installed",
               "the percentage was not redrawn above the hatch at the image's own text rect")
   // Drain, not charge: the stripes travel exactly one pitch left per hatch period
@@ -1867,14 +1886,14 @@ private func runCoreSelfTest() throws {
   hatchModeCompletions[2](hatchModeSnapshot(remaining: 20))
   let clipRedBand = hatchModeDelegate.activityLayers[.claude]
   try require(clipRedBand?.frame.width == (MODERN_BODY_WIDTH - 4) * 20 / 100
-                && clipRedBand?.name?.contains("\(activityHatchRGB(20, dark: true))") == true,
+                && clipRedBand?.name?.contains("\(activityHatchRGB(20, dark: false))") == true,
               "drain-hatch", "derived-hatch-red-band-modern",
               "a red-band battery fell back to the flat empty tone instead of a derived hatch")
   hatchModeDelegate.requestRefresh(.manual)
   hatchModeCompletions[3](hatchModeSnapshot(remaining: 0))
   let clipEmpty = hatchModeDelegate.activityLayers[.claude]
   try require(clipEmpty?.frame.width == MODERN_BODY_WIDTH - 4
-                && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: true))") == true,
+                && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: false))") == true,
               "drain-hatch", "low-fill-fallback-modern",
               "an empty battery did not hatch the whole body in the empty tone")
   // Below the threshold the signature is value-independent, so the reuse path is what a draining
@@ -1905,6 +1924,25 @@ private func runCoreSelfTest() throws {
                 && clipDraining?.sublayers?.first?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-text-refreshed-on-reuse",
               "a provider draining below the threshold kept the stale percentage over the new image")
+  // The case a draining session is actually in: the fill shrinks every refresh while the band — and
+  // so the stripe color — holds. That must resize in place; rebuilding would restart the drift at
+  // t=0 every REFRESH_SECONDS, exactly while the animation is on screen. Note this feeds two
+  // *different* snapshots; modern-layer-survives-refresh feeds the same one twice and cannot see it.
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[6](hatchModeSnapshot(remaining: 75))
+  let clipSeventyFive = hatchModeDelegate.activityLayers[.claude]
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[7](hatchModeSnapshot(remaining: 71))
+  let clipSeventyOne = hatchModeDelegate.activityLayers[.claude]
+  let stripesResized = clipSeventyOne?.sublayers?.first
+  try require(clipSeventyFive != nil && clipSeventyOne != nil
+                && ObjectIdentifier(clipSeventyFive!) == ObjectIdentifier(clipSeventyOne!)
+                && clipSeventyOne?.frame.width == (MODERN_BODY_WIDTH - 4) * 71 / 100
+                && stripesResized?.frame.width == (clipSeventyOne?.frame.width ?? 0) + HATCH_PITCH_PT
+                && stripesResized?.position.x == 0   // left anchor keeps the drift's from/to valid
+                && stripesResized?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-resized-in-place",
+              "a changed fill rebuilt the hatch layer instead of resizing it, resetting the drift")
   // Nothing else pins the signed vertical origin: the headless harness has no button, so
   // buttonHeight == imageHeight there and the -1 of a real 22pt menu bar button never appears
   try require(hatchOriginY(buttonHeight: 22, imageHeight: MODERN_IMAGE_HEIGHT) == -1
@@ -1923,7 +1961,6 @@ private func runCoreSelfTest() throws {
 
   print("self-test-core: drain-hatch PASS")
 
-  print("self-test-core: reduce-motion PASS")
   print("self-test-core: PASS")
 }
 
