@@ -230,6 +230,7 @@ struct VisualResourceSnapshot: Equatable {
   let catTimer: ObjectIdentifier?
   let glintTimer: ObjectIdentifier?
   let activityLayers: [Provider: ObjectIdentifier]
+  let activityTextLayers: [Provider: ObjectIdentifier]
   let refreshTimer: ObjectIdentifier?
   let refreshTimerActive: Bool
   let providerMonitor: ObjectIdentifier?
@@ -252,7 +253,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var apiActiveProviders: Set<Provider> = []
   var sessionActiveProviders: Set<Provider> = []
   var activeProviders: Set<Provider> = []
-  var activityLayers: [Provider: CAShapeLayer] = [:]
+  var activityLayers: [Provider: CALayer] = [:]
+  // The percentage redrawn above the hatch — created, reused and torn down with its clip layer
+  var activityTextLayers: [Provider: CALayer] = [:]
   var catIdx = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
@@ -377,13 +380,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
   }
 
-  private func stopVisualMotion() {
+  // Timers/epoch only — every refresh needs a fresh epoch, but a refresh alone must not reset
+  // an unchanged provider's running "drain" animation, so activity layers are handled separately.
+  private func invalidateVisualTimers() {
     motionEpoch += 1
     animTimer?.invalidate(); animTimer = nil
     catTimer?.invalidate(); catTimer = nil
     glintTimer?.invalidate(); glintTimer = nil
-    activityLayers.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
-    activityLayers.removeAll()
+  }
+
+  private func removeActivityLayers(for provider: Provider) {
+    for layer in [activityLayers.removeValue(forKey: provider),
+                  activityTextLayers.removeValue(forKey: provider)].compactMap({ $0 }) {
+      layer.removeAllAnimations()
+      layer.removeFromSuperlayer()
+    }
+  }
+
+  private func clearActivityLayers() {
+    Set(activityLayers.keys).union(activityTextLayers.keys).forEach { removeActivityLayers(for: $0) }
+  }
+
+  private func stopVisualMotion() {
+    invalidateVisualTimers()
+    clearActivityLayers()
   }
 
   @objc func applyReduceMotionPreference() {
@@ -419,50 +439,107 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func updateActivityLayers() {
     guard !reduceMotionEnabled, presentationConfiguration.displayMode() == "modern",
           let snap = lastSnap, statusItem?.button != nil || allowsHeadlessVisualResources else {
-      activityLayers.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
-      activityLayers.removeAll()
+      clearActivityLayers()
       return
     }
     let button = statusItem?.button
     button?.wantsLayer = true
     let summaries = providerSummaries(snap, configuration: presentationConfiguration)
     let imageWidth = button?.image?.size.width ?? 0
+    let imageHeight = button?.image?.size.height ?? MODERN_IMAGE_HEIGHT
     let buttonWidth = button?.bounds.width ?? imageWidth
-    let imageOriginX = max(0, (buttonWidth - imageWidth) / 2)
-    let itemWidth: CGFloat = 61
-    let itemGap: CGFloat = 7
+    let buttonHeight = button?.bounds.height ?? imageHeight
+    let originX = max(0, (buttonWidth - imageWidth) / 2)
+    let originY = hatchOriginY(buttonHeight: buttonHeight, imageHeight: imageHeight)
+    // Same fallback as prepareAndApplyCurrent: no button → light, so the hatch matches the base image
+    let dark = button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
     for provider in [Provider.claude, .codex] {
       guard activeProviders.contains(provider),
             let index = summaries.firstIndex(where: { $0.provider == provider }) else {
-        activityLayers.removeValue(forKey: provider)?.removeFromSuperlayer()
+        removeActivityLayers(for: provider)
         continue
       }
-      let iconCenter = CGPoint(x: imageOriginX + 2 + CGFloat(index) * (itemWidth + itemGap) + 6.5,
-                               y: button?.bounds.midY ?? 12)
-      let color = provider == .claude
-        ? NSColor(calibratedRed: 0.92, green: 0.38, blue: 0.20, alpha: 1)
-        : NSColor(calibratedRed: 0.45, green: 0.68, blue: 1.0, alpha: 1)
-      let layer = activityLayers[provider] ?? {
-        let layer = CAShapeLayer()
-        layer.bounds = CGRect(x: 0, y: 0, width: 3, height: 3)
-        layer.path = CGPath(ellipseIn: layer.bounds, transform: nil)
-        layer.fillColor = color.cgColor
-        button?.layer?.addSublayer(layer)
-        activityLayers[provider] = layer
-        return layer
-      }()
-      let path = CGMutablePath()
-      path.addEllipse(in: CGRect(x: iconCenter.x - 7, y: iconCenter.y - 7, width: 14, height: 14))
-      layer.position = CGPoint(x: iconCenter.x + 7, y: iconCenter.y)
-      if layer.animation(forKey: "orbit") == nil {
-        let orbit = CAKeyframeAnimation(keyPath: "position")
-        orbit.path = path
-        orbit.duration = 0.9
-        orbit.repeatCount = .infinity
-        orbit.calculationMode = .paced
-        layer.add(orbit, forKey: "orbit")
+      let summary = summaries[index]
+      let itemX = originX + MODERN_IMAGE_PAD + CGFloat(index) * (MODERN_ITEM_WIDTH + MODERN_ITEM_GAP)
+      let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
+      let fillW = max(0, (MODERN_BODY_WIDTH - 4) * normalizedRemaining(summary.remain) / 100)
+      // Too little fill to carry the stripes → run them over the whole body so activity stays visible
+      let wide = fillW >= HATCH_MIN_FILL_PT
+      let rect = CGRect(x: bodyX + 2, y: originY + 5,
+                        width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
+      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
+      let alpha: CGFloat = wide ? 0.85 : 0.55
+      // Rebuild key = exactly what the stripe tile is baked from. Everything else about a refresh —
+      // a narrower fill, a new percentage — is a resize we can apply in place, and must: rebuilding
+      // resets "drain" to t=0, and a draining provider changes its fill on every refresh, which is
+      // precisely when the animation is on screen.
+      let rebuildKey = "\(colorRGB)|\(alpha)"
+      let stripesW = rect.width + HATCH_PITCH_PT
+      // Origin centers the glyphs the way renderModernSummaryImage centers them, so the redraw lands
+      // pixel-on-pixel; the size is the raster's, so .resize gravity doesn't squeeze them.
+      func valueTextFrame(_ text: (image: CGImage, size: CGSize, rasterSize: CGSize)) -> CGRect {
+        CGRect(x: bodyX + (MODERN_BODY_WIDTH - text.size.width) / 2, y: originY + 5,
+               width: text.rasterSize.width, height: text.rasterSize.height)
       }
+      let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark)
+      if let clip = activityLayers[provider], clip.name == rebuildKey,
+         let stripes = clip.sublayers?.first, let label = activityTextLayers[provider] {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)   // implicit actions would slide the resize and crossfade the digits
+        if clip.frame != rect {
+          clip.frame = rect
+          // stripes sits on a left anchor, so its position.x stays 0 and the running drift's
+          // absolute from/to values survive the resize
+          stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
+          stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+                                              color: hatchNSColor(colorRGB, alpha: alpha))
+        }
+        // Baked from the value, so it goes stale even when the geometry doesn't move (below the
+        // low-fill threshold the rect is constant for every remaining value in the band)
+        if let text {
+          label.frame = valueTextFrame(text)
+          label.contents = text.image
+        }
+        CATransaction.commit()
+        continue
+      }
+      removeActivityLayers(for: provider)
+      // No number to redraw above the stripes → install nothing, rather than bury the percentage
+      // under a hatch that would then rebuild on every refresh
+      guard let text else { continue }
+
+      let clip = CALayer()
+      clip.name = rebuildKey
+      clip.frame = rect
+      clip.masksToBounds = true
+      clip.cornerRadius = 2.5
+      let stripes = CALayer()
+      stripes.anchorPoint = CGPoint(x: 0, y: 0.5)   // see the resize path above
+      stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
+      stripes.contentsScale = 2
+      stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+                                          color: hatchNSColor(colorRGB, alpha: alpha))
+      clip.addSublayer(stripes)
+      button?.layer?.addSublayer(clip)
+      activityLayers[provider] = clip
+
+      let drift = CABasicAnimation(keyPath: "position.x")
+      drift.fromValue = stripes.position.x
+      drift.toValue = stripes.position.x - HATCH_PITCH_PT
+      drift.duration = HATCH_PERIOD
+      drift.repeatCount = .infinity
+      drift.isRemovedOnCompletion = false
+      stripes.add(drift, forKey: "drain")
+
+      // The clip sits above the button image and would stripe the centered "NN%", so the number is
+      // redrawn on top of it.
+      let label = CALayer()
+      label.frame = valueTextFrame(text)
+      label.contentsScale = 2
+      label.contents = text.image
+      button?.layer?.addSublayer(label)
+      activityTextLayers[provider] = label
     }
   }
 
@@ -647,6 +724,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       catTimer: catTimer.map { ObjectIdentifier($0) },
       glintTimer: glintTimer.map { ObjectIdentifier($0) },
       activityLayers: activityLayers.mapValues { ObjectIdentifier($0) },
+      activityTextLayers: activityTextLayers.mapValues { ObjectIdentifier($0) },
       refreshTimer: timer.map { ObjectIdentifier($0) },
       refreshTimerActive: timer?.isValid == true,
       providerMonitor: providerMonitorIdentity.map { ObjectIdentifier($0) },
@@ -683,9 +761,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func prepareAndApplyCurrent(_ snapshot: Snapshot) {
-    // A re-presentation is a new visual epoch. Invalidate every callback and layer
-    // before reading mutable presentation configuration or installing new output.
-    stopVisualMotion()
+    // A re-presentation is a new visual epoch. Invalidate every timer callback before reading
+    // mutable presentation configuration or installing new output — but leave activity layers
+    // alone here; applyEligibleMotion reconciles them below without resetting an unchanged
+    // provider's running "drain" animation on every ordinary refresh.
+    invalidateVisualTimers()
     let dark = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     let next = preparePresentation(snapshot, dark: dark, swiftBarDuplicate: duplicateReader(),
                                    assets: assetContextFactory())
@@ -720,12 +800,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   private func applyEligibleMotion(_ output: PreparedPresentation, dark: Bool) {
     guard !reduceMotionEnabled, statusItem != nil || allowsHeadlessVisualResources,
-          output.hasDisplayData else { return }
+          output.hasDisplayData else {
+      // Ineligible (reduce motion, no button, or nothing to show) — updateActivityLayers() is
+      // never reached below to reconcile, so any stale hatch layers must be cleared explicitly.
+      clearActivityLayers()
+      return
+    }
     let modern = presentationConfiguration.displayMode() == "modern"
     if modern {
       updateActivityLayers()
       return
     }
+    // Pixel mode doesn't use activity layers — drop any left over from a prior modern presentation.
+    clearActivityLayers()
     startGlintTimer()
     restartCatTimer(output.catState)
     var frames: [NSImage] = []
@@ -1487,7 +1574,8 @@ private func runCoreSelfTest() throws {
   motionCompletions[0](snapshot)
   let pixelResources = motionDelegate.visualResourceSnapshot()
   try require(pixelResources.animationTimer != nil && pixelResources.catTimer != nil
-                && pixelResources.glintTimer != nil && pixelResources.activityLayers.isEmpty,
+                && pixelResources.glintTimer != nil && pixelResources.activityLayers.isEmpty
+                && pixelResources.activityTextLayers.isEmpty,
               "reduce-motion", "pixel-eligible-resources",
               "pixel presentation did not install only eligible resources")
   let initialAccessibility = motionDelegate.appliedAccessibilitySummary
@@ -1520,6 +1608,7 @@ private func runCoreSelfTest() throws {
   let reducedResources = motionDelegate.visualResourceSnapshot()
   try require(reducedResources.animationTimer == nil && reducedResources.catTimer == nil
                 && reducedResources.glintTimer == nil && reducedResources.activityLayers.isEmpty
+                && reducedResources.activityTextLayers.isEmpty
                 && reducedResources.epoch > pixelResources.epoch
                 && motionOutputs.count == outputCountBeforeEnable + 1
                 && motionAccessibility.count == accessibilityCountBeforeEnable + 1
@@ -1549,8 +1638,10 @@ private func runCoreSelfTest() throws {
   let reducedModernTwo = motionDelegate.visualResourceSnapshot()
   try require(reducedModernOne.animationTimer == nil && reducedModernOne.catTimer == nil
                 && reducedModernOne.glintTimer == nil && reducedModernOne.activityLayers.isEmpty
+                && reducedModernOne.activityTextLayers.isEmpty
                 && reducedModernTwo.animationTimer == nil && reducedModernTwo.catTimer == nil
-                && reducedModernTwo.glintTimer == nil && reducedModernTwo.activityLayers.isEmpty,
+                && reducedModernTwo.glintTimer == nil && reducedModernTwo.activityLayers.isEmpty
+                && reducedModernTwo.activityTextLayers.isEmpty,
               "reduce-motion", "reduced-config-activity-suppression",
               "reduced config/cat/activity changes created visual resources")
 
@@ -1575,6 +1666,7 @@ private func runCoreSelfTest() throws {
                 && reducedAfterRefresh.animationTimer == nil && reducedAfterRefresh.catTimer == nil
                 && reducedAfterRefresh.glintTimer == nil
                 && reducedAfterRefresh.activityLayers.isEmpty
+                && reducedAfterRefresh.activityTextLayers.isEmpty
                 && reducedAfterRefresh.refreshTimer == ObjectIdentifier(refreshTimer)
                 && reducedAfterRefresh.refreshTimerActive
                 && reducedAfterRefresh.providerMonitor == ObjectIdentifier(inertMonitor)
@@ -1603,7 +1695,7 @@ private func runCoreSelfTest() throws {
   motionFlag.value = false
   center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
   let restoredModern = motionDelegate.visualResourceSnapshot()
-  try require(restoredModern.activityLayers.count == 2
+  try require(restoredModern.activityLayers.count == 2 && restoredModern.activityTextLayers.count == 2
                 && restoredModern.animationTimer == nil && restoredModern.catTimer == nil
                 && restoredModern.glintTimer == nil,
               "reduce-motion", "modern-eligible-restoration",
@@ -1617,7 +1709,8 @@ private func runCoreSelfTest() throws {
   center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
   center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
   let repeatedReduced = motionDelegate.visualResourceSnapshot()
-  try require(repeatedReduced.activityLayers.isEmpty && repeatedReduced.animationTimer == nil
+  try require(repeatedReduced.activityLayers.isEmpty && repeatedReduced.activityTextLayers.isEmpty
+                && repeatedReduced.animationTimer == nil
                 && repeatedReduced.catTimer == nil && repeatedReduced.glintTimer == nil,
               "reduce-motion", "repeated-reduced-idempotence",
               "repeated reduced cycle retained visual resources")
@@ -1625,7 +1718,7 @@ private func runCoreSelfTest() throws {
   center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
   let repeatedModern = motionDelegate.visualResourceSnapshot()
   center.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
-  try require(repeatedModern.activityLayers.count == 2
+  try require(repeatedModern.activityLayers.count == 2 && repeatedModern.activityTextLayers.count == 2
                 && motionDelegate.visualResourceSnapshot() == repeatedModern,
               "reduce-motion", "modern-repeat-restoration-idempotence",
               "repeated cycle restored ineligible resources or changed identity")
@@ -1633,7 +1726,8 @@ private func runCoreSelfTest() throws {
   motionMode.value = "pixel"
   motionDelegate.rerender()
   let finalPixel = motionDelegate.visualResourceSnapshot()
-  try require(finalPixel.activityLayers.isEmpty && finalPixel.catTimer != nil
+  try require(finalPixel.activityLayers.isEmpty && finalPixel.activityTextLayers.isEmpty
+                && finalPixel.catTimer != nil
                 && finalPixel.glintTimer != nil && finalPixel.animationTimer == nil,
               "reduce-motion", "representation-invalidation",
               "re-presentation retained resources from the prior mode")
@@ -1656,11 +1750,217 @@ private func runCoreSelfTest() throws {
   try require(launchReduced.reduceMotionEnabled && launchReducedFactory.resources.isEmpty
                 && launchResources.animationTimer == nil && launchResources.catTimer == nil
                 && launchResources.glintTimer == nil && launchResources.activityLayers.isEmpty
+                && launchResources.activityTextLayers.isEmpty
                 && launchResources.providerMonitor == ObjectIdentifier(launchMonitor)
                 && launchReduced.providerMonitorIdentity === launchMonitor,
               "reduce-motion", "enabled-before-render",
               "launch-enabled Reduce Motion created resources or replaced inert monitor identity")
   print("self-test-core: reduce-motion PASS")
+
+  // ── drain hatch: derived colors and shared modern geometry ──
+  try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
+                && emptyHatchRGB(dark: true) == (95, 95, 95)
+                && emptyHatchRGB(dark: false) == (190, 190, 190),
+              "drain-hatch", "derived-colors",
+              "hatch colors were not derived from the remaining color")
+  try require(MODERN_ITEM_WIDTH == 59,
+              "drain-hatch", "modern-item-width",
+              "modern item width did not match the rendered layout")
+
+  // ── drain hatch: modern mode layers ──
+  // Note: local names prefixed hatchMode* (not modern*) — a `modernConfiguration` from
+  // conversion-bands-risk above already occupies this flat function scope.
+  let hatchModeFlag = CoreSelfTestFlag(false)
+  let hatchModeConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" },
+    catStyle: { CatStyle.none }, batterySize: { "big" },
+    goldTestEnabled: { false }, forcedCatState: { nil }, language: { "en" })
+  var hatchModeCompletions: [(Snapshot) -> Void] = []
+  let hatchModeCenter = NotificationCenter()
+  let hatchModeDelegate = AppDelegate(
+    presentationConfiguration: hatchModeConfiguration,
+    collector: { hatchModeCompletions.append($0) },
+    assetContextFactory: { refreshAssets }, duplicateReader: { false }, opener: { _ in },
+    reduceMotionReader: { hatchModeFlag.value }, glintIntervalReader: { 30 },
+    motionNotificationCenter: hatchModeCenter,
+    visualTimerFactory: CoreSelfTestVisualTimerFactory().make,
+    allowsHeadlessVisualResources: true, providerMonitorIdentity: NSObject())
+  hatchModeDelegate.menuSink = { _ in }
+  hatchModeDelegate.staticOutputSink = { _ in }
+  hatchModeDelegate.accessibilitySummarySink = { _ in }
+  hatchModeDelegate.requestRefresh(.initial)
+  hatchModeCompletions[0](snapshot)
+  hatchModeDelegate.apiActiveProviders = [.claude]
+  hatchModeDelegate.updateActivityAnimation()
+  let clip = hatchModeDelegate.activityLayers[.claude]
+  let stripes = clip?.sublayers?.first
+  try require(Set(hatchModeDelegate.activityLayers.keys) == [Provider.claude]
+                && clip?.masksToBounds == true
+                && stripes?.contents != nil
+                && stripes?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-installed",
+              "active provider did not get a masked, animated hatch layer")
+  try require((clip?.frame.width ?? 0) > 0 && (clip?.frame.height ?? 0) == 14
+                && (stripes?.frame.width ?? 0) == (clip?.frame.width ?? 0) + HATCH_PITCH_PT,
+              "drain-hatch", "modern-layer-geometry",
+              "hatch layer geometry did not match the battery fill")
+  // The clip layer covers the centered "NN%" in the button image, so the number is redrawn above it
+  // at exactly the origin renderModernSummaryImage drew it from — glyph origin, not box center,
+  // because the layer is sized to the rounded-up raster so .resize gravity can't squeeze it
+  let label = hatchModeDelegate.activityTextLayers[.claude]
+  func textImageHasInk(_ value: Double) -> Bool {
+    guard let text = modernValueTextImage(value, dark: false),
+          let pixels = text.image.dataProvider?.data else { return false }
+    return (pixels as Data).contains { $0 != 0 }
+  }
+  let labelText = modernValueTextImage(50, dark: false)
+  let labelOriginX = MODERN_IMAGE_PAD + MODERN_ICON_WIDTH + MODERN_ICON_GAP
+    + (MODERN_BODY_WIDTH - (labelText?.size.width ?? 0)) / 2
+  try require(label?.contents != nil && (label?.frame.width ?? 0) > 0 && textImageHasInk(50)
+                && label?.frame.minY == clip?.frame.minY
+                && labelText != nil
+                && label?.frame.width == labelText?.rasterSize.width
+                && label?.frame.height == labelText?.rasterSize.height
+                && abs((label?.frame.minX ?? 0) - labelOriginX) < 0.001,
+              "drain-hatch", "modern-text-layer-installed",
+              "the percentage was not redrawn above the hatch at the image's own text rect")
+  // Drain, not charge: the stripes travel exactly one pitch left per hatch period
+  let drift = stripes?.animation(forKey: "drain") as? CABasicAnimation
+  let driftFrom = (drift?.fromValue as? NSNumber)?.doubleValue
+  let driftTo = (drift?.toValue as? NSNumber)?.doubleValue
+  try require(driftFrom != nil && driftTo != nil
+                && driftTo! == driftFrom! - Double(HATCH_PITCH_PT)
+                && drift?.duration == HATCH_PERIOD && drift?.repeatCount == .infinity,
+              "drain-hatch", "modern-drift-direction",
+              "the drain animation did not drift one pitch left over one hatch period")
+  // A second call with nothing changed must not restart the running "drain" animation
+  hatchModeDelegate.updateActivityAnimation()
+  let clipReused = hatchModeDelegate.activityLayers[.claude]
+  let stripesReused = clipReused?.sublayers?.first
+  let labelReused = hatchModeDelegate.activityTextLayers[.claude]
+  try require(clip != nil && clipReused != nil
+                && ObjectIdentifier(clip!) == ObjectIdentifier(clipReused!)
+                && stripes != nil && stripesReused != nil
+                && ObjectIdentifier(stripes!) == ObjectIdentifier(stripesReused!)
+                && label != nil && labelReused != nil
+                && ObjectIdentifier(label!) == ObjectIdentifier(labelReused!)
+                && stripesReused?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-reused",
+              "unchanged hatch geometry/color rebuilt the layer instead of reusing it")
+  hatchModeDelegate.apiActiveProviders = []
+  hatchModeDelegate.updateActivityAnimation()
+  try require(hatchModeDelegate.activityLayers.isEmpty && hatchModeDelegate.activityTextLayers.isEmpty,
+              "drain-hatch", "modern-layer-removed",
+              "hatch layer survived the provider going idle")
+  // Becoming active again after idle is a real change — the old layer identity must not resurface
+  hatchModeDelegate.apiActiveProviders = [.claude]
+  hatchModeDelegate.updateActivityAnimation()
+  let clipRecreated = hatchModeDelegate.activityLayers[.claude]
+  try require(clip != nil && clipRecreated != nil
+                && ObjectIdentifier(clip!) != ObjectIdentifier(clipRecreated!)
+                && clipRecreated?.sublayers?.first?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-recreated-on-activate",
+              "hatch layer identity survived an idle/active cycle instead of rebuilding")
+  // A full refresh cycle (prepareAndApplyCurrent → applyEligibleMotion) on an unchanged modern
+  // presentation is the real regression site — stopVisualMotion() used to wipe layers here on
+  // every refresh regardless of the reuse check above.
+  hatchModeDelegate.requestRefresh(.timer)
+  hatchModeCompletions[1](snapshot)
+  let clipAfterRefresh = hatchModeDelegate.activityLayers[.claude]
+  let stripesAfterRefresh = clipAfterRefresh?.sublayers?.first
+  try require(clipRecreated != nil && clipAfterRefresh != nil
+                && ObjectIdentifier(clipRecreated!) == ObjectIdentifier(clipAfterRefresh!)
+                && stripesAfterRefresh?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-survives-refresh",
+              "a full refresh cycle on an unchanged presentation reset the running drain animation")
+  // Low-fill fallback: above the threshold the layer tracks the fill in the derived tone,
+  // below it the whole body is hatched in the flat empty tone
+  func hatchModeSnapshot(remaining: Double) -> Snapshot {
+    let usage = ClaudeUsage(measuredAt: now, live: true,
+                            fiveHour: UsageWindow(pct: 100 - remaining, resetsAt: now + 4_000),
+                            weekly: UsageWindow(pct: 100 - remaining, resetsAt: nil), fable: nil)
+    return Snapshot(now: now, usage: usage, block: nil, models: nil, codex: nil,
+                    update: (nil, false))
+  }
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[2](hatchModeSnapshot(remaining: 20))
+  let clipRedBand = hatchModeDelegate.activityLayers[.claude]
+  try require(clipRedBand?.frame.width == (MODERN_BODY_WIDTH - 4) * 20 / 100
+                && clipRedBand?.name?.contains("\(activityHatchRGB(20, dark: false))") == true,
+              "drain-hatch", "derived-hatch-red-band-modern",
+              "a red-band battery fell back to the flat empty tone instead of a derived hatch")
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[3](hatchModeSnapshot(remaining: 0))
+  let clipEmpty = hatchModeDelegate.activityLayers[.claude]
+  try require(clipEmpty?.frame.width == MODERN_BODY_WIDTH - 4
+                && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: false))") == true,
+              "drain-hatch", "low-fill-fallback-modern",
+              "an empty battery did not hatch the whole body in the empty tone")
+  // Below the threshold the signature is value-independent, so the reuse path is what a draining
+  // provider actually takes — the label has to be refreshed in place there, without the layer
+  // teardown that a widened signature would cause (that would reset the drift to t=0).
+  func hatchLabelProbe() -> (width: CGFloat, pixels: Int)? {
+    // CFTypeID rather than `as?` — a conditional downcast to a CF type always succeeds, so a
+    // non-image `contents` would crash the probe instead of failing the assertion below
+    guard let label = hatchModeDelegate.activityTextLayers[.claude],
+          let contents = label.contents,
+          CFGetTypeID(contents as CFTypeRef) == CGImage.typeID else { return nil }
+    return (label.frame.width, (contents as! CGImage).width)
+  }
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[4](hatchModeSnapshot(remaining: 15))
+  let labelFifteen = hatchModeDelegate.activityTextLayers[.claude]
+  let probeFifteen = hatchLabelProbe()
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[5](hatchModeSnapshot(remaining: 5))
+  let clipDraining = hatchModeDelegate.activityLayers[.claude]
+  let probeFive = hatchLabelProbe()
+  try require(probeFifteen != nil && probeFive != nil
+                && probeFifteen! != probeFive!
+                && labelFifteen != nil
+                && ObjectIdentifier(labelFifteen!) == ObjectIdentifier(hatchModeDelegate.activityTextLayers[.claude]!)
+                && clipEmpty != nil && clipDraining != nil
+                && ObjectIdentifier(clipEmpty!) == ObjectIdentifier(clipDraining!)
+                && clipDraining?.sublayers?.first?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-text-refreshed-on-reuse",
+              "a provider draining below the threshold kept the stale percentage over the new image")
+  // The case a draining session is actually in: the fill shrinks every refresh while the band — and
+  // so the stripe color — holds. That must resize in place; rebuilding would restart the drift at
+  // t=0 every REFRESH_SECONDS, exactly while the animation is on screen. Note this feeds two
+  // *different* snapshots; modern-layer-survives-refresh feeds the same one twice and cannot see it.
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[6](hatchModeSnapshot(remaining: 75))
+  let clipSeventyFive = hatchModeDelegate.activityLayers[.claude]
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions[7](hatchModeSnapshot(remaining: 71))
+  let clipSeventyOne = hatchModeDelegate.activityLayers[.claude]
+  let stripesResized = clipSeventyOne?.sublayers?.first
+  try require(clipSeventyFive != nil && clipSeventyOne != nil
+                && ObjectIdentifier(clipSeventyFive!) == ObjectIdentifier(clipSeventyOne!)
+                && clipSeventyOne?.frame.width == (MODERN_BODY_WIDTH - 4) * 71 / 100
+                && stripesResized?.frame.width == (clipSeventyOne?.frame.width ?? 0) + HATCH_PITCH_PT
+                && stripesResized?.position.x == 0   // left anchor keeps the drift's from/to valid
+                && stripesResized?.animation(forKey: "drain") != nil,
+              "drain-hatch", "modern-layer-resized-in-place",
+              "a changed fill rebuilt the hatch layer instead of resizing it, resetting the drift")
+  // Nothing else pins the signed vertical origin: the headless harness has no button, so
+  // buttonHeight == imageHeight there and the -1 of a real 22pt menu bar button never appears
+  try require(hatchOriginY(buttonHeight: 22, imageHeight: MODERN_IMAGE_HEIGHT) == -1
+                && hatchOriginY(buttonHeight: MODERN_IMAGE_HEIGHT, imageHeight: MODERN_IMAGE_HEIGHT) == 0,
+              "drain-hatch", "signed-origin-y",
+              "a button shorter than the image did not push the hatch origin negative")
+  hatchModeFlag.value = true
+  // reduceMotionEnabled only updates off a notification post (see applyReduceMotionPreference) —
+  // flipping the reader alone wouldn't move it, matching the "reduce-motion" group's own pattern.
+  hatchModeCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+  hatchModeDelegate.apiActiveProviders = [.claude, .codex]
+  hatchModeDelegate.updateActivityAnimation()
+  try require(hatchModeDelegate.activityLayers.isEmpty && hatchModeDelegate.activityTextLayers.isEmpty,
+              "drain-hatch", "modern-reduce-motion",
+              "hatch layers were created while Reduce Motion was on")
+
+  print("self-test-core: drain-hatch PASS")
+
   print("self-test-core: PASS")
 }
 

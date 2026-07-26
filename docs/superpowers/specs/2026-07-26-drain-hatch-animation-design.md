@@ -30,74 +30,87 @@ orbit 애니메이션으로 "사용중"을 표시한다 (`app/main.swift` `updat
 ## 적용 범위
 
 - 모던 표시 모드(`displayMode == "modern"`): orbit 점을 **제거**하고 빗금으로 대체
-- 픽셀 표시 모드(`displayMode == "pixel"`): 캡슐 채움 위에 동일한 45° 빗금을 픽셀 단위로 적용
+- 픽셀 표시 모드(`displayMode == "pixel"`): 빗금을 **적용하지 않는다**. 기존 고양이 스프라이트 +
+  글린트 애니메이션을 그대로 유지한다.
+  - 이유: 픽셀 캡슐 내부는 논리 픽셀 14×6 뿐이라 빗금이 어두운 퍼센트 숫자와 겹쳐 숫자를 읽을 수
+    없게 만든다. 실제 메뉴바에서 확인 후 픽셀 모드 빗금을 철회했다.
 - 드롭다운 메뉴 안의 막대 그래프는 변경하지 않는다
 - `reduceMotion`이 켜져 있으면 두 모드 모두 애니메이션 없음 (기존 정책 유지)
 
 ## 구현 설계
 
-### 1. 공통 — 빗금 색 헬퍼 (`app/BatteryRenderer.swift`)
+### 1. 공통 — 빗금 헬퍼 (`app/BatteryRenderer.swift`)
 
-`heatRemain(_:dark:)`은 private이므로, 잔량 값에서 빗금 색을 얻는 공개 헬퍼를 추가한다.
+`heatRemain(_:dark:)`은 private이므로, 잔량 값에서 빗금 색을 얻는 공개 헬퍼를 둔다.
 
 ```
-func activityHatchColor(remain: Double?, dark: Bool) -> RGB   // 파생색 (RGB × 0.35)
+func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8)  // 파생색 (RGB × 0.35)
+func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8)                       // 저잔량 폴백 톤
+func hatchNSColor(_ rgb: (UInt8, UInt8, UInt8), alpha: CGFloat) -> NSColor     // RGB → NSColor
+func hatchStripeImage(width:height:color:) -> CGImage?                        // 45° 빗금 타일
+func modernValueTextImage(_ value: Double, dark: Bool)                        // "NN%" 글리프 래스터
+  -> (image: CGImage, size: CGSize, rasterSize: CGSize)?
 ```
 
-모던 모드는 `NSColor`가 필요하므로 같은 파일에서 `RGB → NSColor` 변환을 함께 노출한다.
-`nil`/빈 잔량은 호출부에서 걸러낸다.
+`modernValueAttributes(dark:)`가 폰트/색의 단일 출처라, 캡슐 이미지와 오버레이 라벨이 같은
+글리프를 그린다. `rasterSize`는 픽셀 격자로 올림한 크기 — 레이어를 `size`로 잡으면 기본
+`contentsGravity = .resize`가 글리프를 눌러버리므로 레이어 크기는 `rasterSize`를 쓴다.
 
 ### 2. 모던 모드 — CALayer 오버레이 (`app/main.swift`)
 
-기존 orbit과 같은 레이어 오버레이 방식이라 이미지 재렌더가 없다.
+이미지 재렌더 없이 버튼 레이어 위에 얹는다. 프로바이더당 레이어 두 장:
 
-- 프로바이더별 `CALayer` 하나(`hatchLayers[provider]`)
-- `contents`: 45° 빗금 한 피치를 그린 타일 `CGImage`. 레이어 폭은 `fill 폭 + 피치`,
-  `contentsGravity = .resize` 대신 타일 이미지를 반복 배치한 크기로 생성
-- `mask`: fill 사각형(`x+2, y+5, fillW, 14`, 반경 2.5)의 `CAShapeLayer`
-- 애니메이션: `position.x`를 피치(9pt)만큼 음의 방향으로 이동, `duration 0.6`, `repeatCount .infinity`, linear
-- 잔량/레이아웃이 바뀌면 마스크와 레이어 폭을 다시 계산 (기존 `updateActivityLayers` 호출 경로 그대로 사용)
+- **clip** (`activityLayers[provider]`): fill 사각형(`bodyX+2, originY+5, fillW, 14`)에
+  `masksToBounds = true`, `cornerRadius = 2.5`. 별도 `CAShapeLayer` 마스크는 쓰지 않는다.
+- **stripes** (clip의 서브레이어): `contents`는 `hatchStripeImage`가 그린 45° 빗금 타일.
+  폭은 `fill 폭 + 피치`. `anchorPoint = (0, 0.5)` — 리사이즈해도 `position.x`가 0으로 고정돼
+  진행 중인 애니메이션의 절대 from/to 값이 그대로 유효하다.
+- **label** (`activityTextLayers[provider]`): clip이 캡슐 이미지의 가운데 정렬된 "NN%"를 덮으므로
+  같은 글리프를 빗금 **위에** 다시 그린다. x 원점은 `renderModernSummaryImage`와 동일한 중앙 정렬
+  계산, 크기는 `rasterSize`.
+- 애니메이션: stripes의 `position.x`를 피치(9pt)만큼 음의 방향으로 이동, `duration 0.6`,
+  `repeatCount .infinity`. `timingFunction`을 두지 않아 기본 linear.
 
-**좌표 상수 수정**: 현재 activity 레이어는 `itemWidth = 61`을 쓰지만
+**재사용 / 리사이즈**: `updateActivityLayers`는 매 refresh마다(`setButtonImage` 포함) 돌기 때문에,
+매번 레이어를 새로 만들면 진행 중인 drift가 t=0으로 되돌아간다. clip의 `name`에 **rebuild key**
+(빗금 타일이 구워지는 값 = 색 + 알파)만 담고,
+
+- rebuild key가 같고 rect가 달라졌으면 → **in-place 리사이즈**: `clip.frame`, `stripes.frame`,
+  `stripes.contents`만 갱신하고 `"drain"` 애니메이션은 그대로 둔다
+- rebuild key가 같고 rect도 같으면 → 라벨만 갱신
+- rebuild key가 달라졌으면 → 두 레이어 모두 재생성
+
+라벨은 **세 경로 모두에서** 갱신한다. 잔량이 저잔량 폴백 구간에 있으면 rect·색·알파가 모두
+잔량과 무관해져 rebuild key와 rect가 동시에 고정되므로, 라벨만 갱신하는 경로가 없으면 옛 숫자가
+새 이미지 위에 그대로 남는다.
+
+리사이즈·라벨 갱신은 `CATransaction.setDisableActions(true)` 안에서 한다. 암시적 액션이 켜져 있으면
+리사이즈가 슬라이드되고 숫자가 크로스페이드된다.
+
+**좌표 상수 수정**: 기존 activity 레이어는 `itemWidth = 61`을 썼지만
 `renderModernSummaryImage`의 실제 항목 폭은 `iconWidth(13) + iconGap(5) + bodyW(38) + 3 = 59`다.
-두 번째 배터리에서 2px 어긋나므로 `59`로 바로잡는다. 빗금은 fill에 정확히 겹쳐야 한다.
+두 번째 배터리에서 2px 어긋나므로 `MODERN_*` 상수를 두 곳이 공유하게 해 바로잡는다.
+빗금은 fill에 정확히 겹쳐야 한다.
 
-### 3. 픽셀 모드 — 렌더 시 픽셀 빗금 (`app/BatteryRenderer.swift`, `app/main.swift`)
+### 3. 픽셀 모드 — 변경 없음
 
-`drawCapsule`에 `hatchPhase: Int?`를 추가한다. 캔버스가 픽셀 격자이므로 45°는 다음 한 줄로 떨어진다.
-
-```
-if ((px - py + phase) % pitch) < width { cv.set(px, py, hatchColor) }
-```
-
-- fill 영역(`x+2 ..< x+2+fw`, `by+2 ..< by+bh-2`) 안에서만 적용
-- 픽셀 캔버스는 2x이므로 굵기 2px / 피치 6px을 사용해 모던 모드와 비슷한 밀도를 맞춘다
-- `renderBatteryImage(… hatchPhase:)`로 전달하고, 활성 프로바이더의 `BattItem`에만 적용
-  (`BattItem.provider`로 판별)
-
-**타이머 통합**: 고양이 프레임 타이머와 빗금 phase 타이머가 각각 `setButtonImage`를 호출하면
-서로의 상태를 덮어쓴다. 기존 `catTick`을 "픽셀 모션 틱"으로 확장해 한 틱에서
-`catIdx`와 `hatchPhase`를 함께 증가시키고 이미지를 한 번만 그린다.
-
-- 주기: 0.1s (10fps). 피치 6px을 0.6s에 지나가므로 틱당 1px
-- 실행 조건: 고양이가 켜져 있거나 활성 프로바이더가 하나 이상일 때
-- 인트로/글린트 프레임 재생 중(`animTimer?.isValid == true`)에는 기존 가드대로 skip
+빗금을 넣지 않으므로 `drawCapsule` / `renderBatteryImage` 시그니처, `catTick`, `restartCatTimer`는
+모두 기존 형태를 유지한다. 고양이 타이머는 고양이 프레임만 담당한다.
 
 ### 4. 예외 처리
 
-- **잔량이 매우 적을 때**: fill 폭이 8px(모던) / 6px(픽셀) 미만이면 빗금을 배터리 내부 전체에
-  ink 20% 알파로 그린다. 0%에서도 "사용중"이 계속 보인다.
-- **100% 골드 글린트**: 픽셀 모드에서 골드 캡슐의 글린트 스윕과 겹치지 않도록,
-  글린트 프레임 재생 중에는 빗금 틱을 skip한다 (기존 `catTick` 가드와 동일).
-- **비활성 전환 / reduceMotion**: `stopVisualMotion`이 레이어를 정리하는 기존 경로를 그대로 사용하고,
-  픽셀 모드는 phase를 0으로 되돌린 정적 이미지를 다시 그린다.
+- **잔량이 매우 적을 때**: fill 폭이 6pt 미만이면 빗금을 배터리 내부 전체에 낮은 알파의 플랫한
+  톤으로 그린다. 0%에서도 "사용중"이 계속 보인다.
+- **비활성 전환 / reduceMotion**: 빗금 레이어는 `updateActivityLayers`가 조정하고,
+  `stopVisualMotion` / `clearActivityLayers`가 정리한다. 일반 refresh 주기는 레이어를 재사용해
+  진행 중인 drift 애니메이션을 t=0으로 되돌리지 않는다.
 
 ## 테스트
 
 - `--self-test-core`의 기존 activity 검증(`main.swift`의 `motionDelegate.apiActiveProviders` 블록)을
   orbit 레이어 대신 **빗금 레이어 생성/제거** 검증으로 교체
-- 픽셀 모드: 동일 입력에 `hatchPhase`만 바꿔 렌더한 두 이미지가 서로 다르고,
-  `hatchPhase = nil`이면 기존 이미지와 픽셀 단위로 동일한지 확인
+- 레이어 재사용(색이 그대로면 동일 인스턴스 유지), 잔량이 바뀔 때의 in-place 리사이즈(같은 인스턴스 +
+  `"drain"` 유지), 잔량 저하 시 폴백, 빗금 위 퍼센트 텍스트 레이어의 원점/크기를 검증
 - `reduceMotion = true`에서 두 모드 모두 애니메이션 리소스가 남지 않는지 확인 (기존 검증 확장)
 - 육안 확인: `app/build.sh` 후 실제 메뉴바에서 Claude 세션을 돌려 빗금 동작과 잔량 색 전환 확인
 

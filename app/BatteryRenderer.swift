@@ -236,6 +236,104 @@ private func heatRemain(_ band: RemainingBand, dark: Bool) -> RGB {
   }
 }
 
+// Modern layout geometry — shared by the renderer and the activity layers so the two can't drift
+let MODERN_ICON_WIDTH: CGFloat = 13
+let MODERN_ICON_GAP: CGFloat = 5
+let MODERN_BODY_WIDTH: CGFloat = 38
+let MODERN_BODY_HEIGHT: CGFloat = 18
+let MODERN_ITEM_GAP: CGFloat = 7
+let MODERN_IMAGE_PAD: CGFloat = 2
+let MODERN_IMAGE_HEIGHT: CGFloat = 24
+let MODERN_ITEM_WIDTH = MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH + 3
+
+// Drain hatch — 45° stripes drifting right→left over the remaining fill ("this is being used up").
+// Modern mode only; the pixel capsule interior is too small to carry stripes legibly.
+let HATCH_PITCH_PT: CGFloat = 9
+let HATCH_STRIPE_PT: CGFloat = 3
+let HATCH_PERIOD: CFTimeInterval = 0.6
+
+// Below this the fill is too narrow to carry the stripes — they run over the whole body instead.
+// Points of the 34pt modern capsule interior.
+let HATCH_MIN_FILL_PT: CGFloat = 6
+
+// Signed on purpose: a 22pt menu bar button is shorter than the 24pt image, and clamping that -1
+// to 0 would lift the stripes a point off the fill they sit inside
+func hatchOriginY(buttonHeight: CGFloat, imageHeight: CGFloat) -> CGFloat {
+  (buttonHeight - imageHeight) / 2
+}
+
+// Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
+func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
+  let base = heatRemain(remainingBand(normalizedRemaining(remain ?? 0)), dark: dark)
+  let scale = 0.35
+  return (UInt8((Double(base.r) * scale).rounded()),
+          UInt8((Double(base.g) * scale).rounded()),
+          UInt8((Double(base.b) * scale).rounded()))
+}
+
+// Used when the fill is too small to carry the hatch — the stripes run over the empty body instead
+func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8) { dark ? (95, 95, 95) : (190, 190, 190) }
+
+// One period-aligned strip of 45° stripes: translating it left by exactly HATCH_PITCH_PT looks seamless
+func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImage? {
+  let scale: CGFloat = 2
+  let pw = Int((width * scale).rounded()), ph = Int((height * scale).rounded())
+  guard pw > 0, ph > 0,
+        let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+  else { return nil }
+  ctx.scaleBy(x: scale, y: scale)
+  ctx.setFillColor(color.cgColor)
+  var x = -height - HATCH_PITCH_PT
+  while x < width + HATCH_PITCH_PT {
+    ctx.move(to: CGPoint(x: x, y: 0))
+    ctx.addLine(to: CGPoint(x: x + HATCH_STRIPE_PT, y: 0))
+    ctx.addLine(to: CGPoint(x: x + HATCH_STRIPE_PT + height, y: height))
+    ctx.addLine(to: CGPoint(x: x + height, y: height))
+    ctx.closePath()
+    ctx.fillPath()
+    x += HATCH_PITCH_PT
+  }
+  return ctx.makeImage()
+}
+
+// The percentage drawn inside a modern capsule — shared so the activity layer can redraw it above
+// the hatch with exactly the font and color the button image already used.
+func modernValueAttributes(dark: Bool) -> [NSAttributedString.Key: Any] {
+  let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
+  return [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: ink]
+}
+
+// Just the "NN%" glyphs on transparency, plus the size the caller needs to center them and the
+// size the raster actually covers — the pixel grid rounds up, and a layer sized to `size` instead
+// of `rasterSize` squeezes the glyphs under the default `.resize` contents gravity.
+func modernValueTextImage(_ value: Double, dark: Bool)
+  -> (image: CGImage, size: CGSize, rasterSize: CGSize)? {
+  let text = "\(Int(value.rounded()))%" as NSString
+  let attrs = modernValueAttributes(dark: dark)
+  let size = text.size(withAttributes: attrs)
+  let scale: CGFloat = 2   // pairs with contentsScale on the layer that shows this image
+  let pw = Int((size.width * scale).rounded(.up)), ph = Int((size.height * scale).rounded(.up))
+  guard pw > 0, ph > 0,
+        let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+  else { return nil }
+  ctx.scaleBy(x: scale, y: scale)
+  let previous = NSGraphicsContext.current
+  NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+  text.draw(at: .zero, withAttributes: attrs)
+  NSGraphicsContext.current = previous
+  let rasterSize = CGSize(width: CGFloat(pw) / scale, height: CGFloat(ph) / scale)
+  return ctx.makeImage().map { ($0, size, rasterSize) }
+}
+
+func hatchNSColor(_ rgb: (UInt8, UInt8, UInt8), alpha: CGFloat) -> NSColor {
+  NSColor(calibratedRed: CGFloat(rgb.0) / 255, green: CGFloat(rgb.1) / 255,
+          blue: CGFloat(rgb.2) / 255, alpha: alpha)
+}
+
 // 100% remaining = golden battery (a two-tone gold distinct from the warning yellow)
 func isGolden(_ remain: Double?) -> Bool {
   guard let remain, remain.isFinite else { return false }
@@ -380,12 +478,15 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
 func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
                               assetContext: ProviderAssetContext = .production()) -> NSImage? {
   guard !summaries.isEmpty else { return nil }
-  let iconWidth: CGFloat = 13, iconGap: CGFloat = 5, bodyW: CGFloat = 38, bodyH: CGFloat = 18, itemGap: CGFloat = 7
-  let itemW = iconWidth + iconGap + bodyW + 3
-  let image = NSImage(size: NSSize(width: ceil(4 + CGFloat(summaries.count) * itemW + CGFloat(summaries.count - 1) * itemGap), height: 24))
+  let iconWidth = MODERN_ICON_WIDTH, iconGap = MODERN_ICON_GAP
+  let bodyW = MODERN_BODY_WIDTH, bodyH = MODERN_BODY_HEIGHT, itemGap = MODERN_ITEM_GAP
+  let itemW = MODERN_ITEM_WIDTH
+  let image = NSImage(size: NSSize(width: ceil(MODERN_IMAGE_PAD * 2 + CGFloat(summaries.count) * itemW
+                                               + CGFloat(summaries.count - 1) * itemGap),
+                                   height: MODERN_IMAGE_HEIGHT))
   image.lockFocus()
   let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
-  var x: CGFloat = 2
+  var x: CGFloat = MODERN_IMAGE_PAD
   for (index, summary) in summaries.enumerated() {
     let bodyX = x + iconWidth + iconGap
     let rect = NSRect(x: bodyX, y: 3, width: bodyW, height: bodyH)
@@ -405,8 +506,7 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
       drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5))
     }
     let valueText = "\(Int(value.rounded()))%"
-    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+    let attrs = modernValueAttributes(dark: dark)
     let size = (valueText as NSString).size(withAttributes: attrs)
     (valueText as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
     x += itemW
