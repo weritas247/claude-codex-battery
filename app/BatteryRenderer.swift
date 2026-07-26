@@ -274,6 +274,13 @@ func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
 // Used when the fill is too small to carry the hatch — the stripes run over the empty body instead
 func emptyHatchRGB(dark: Bool) -> (UInt8, UInt8, UInt8) { dark ? (95, 95, 95) : (190, 190, 190) }
 
+// Is this pixel-canvas cell on a stripe? Raising phase moves every stripe one px left (the drain
+// direction), matching the modern tile's leftward drift.
+func hatchStripeHit(_ x: Int, _ y: Int, phase: Int) -> Bool {
+  let d = (((x + y + phase) % HATCH_PITCH_PX) + HATCH_PITCH_PX) % HATCH_PITCH_PX
+  return d < HATCH_STRIPE_PX
+}
+
 // One period-aligned strip of 45° stripes: translating it left by exactly HATCH_PITCH_PT looks seamless
 func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImage? {
   let scale: CGFloat = 2
@@ -378,8 +385,7 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
     for j in 0 ..< (p.bh - 4) {
       for i in 0 ..< hatchW {
         let px = x + 2 + i, py = by + 2 + j
-        let d = (((px - py + phase) % HATCH_PITCH_PX) + HATCH_PITCH_PX) % HATCH_PITCH_PX
-        if d < HATCH_STRIPE_PX { cv.set(px, py, col) }
+        if hatchStripeHit(px, py, phase: phase) { cv.set(px, py, col) }
       }
     }
   }

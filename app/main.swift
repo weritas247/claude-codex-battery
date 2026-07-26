@@ -1773,6 +1773,19 @@ private func runCoreSelfTest() throws {
   try require(hatchZero != nil && hatchZero != hatchPlain && hatchZero != hatchOne,
               "drain-hatch", "phase-advances-pixels",
               "hatch phase did not change the rendered pixels")
+  // Right→left drift: one phase step moves every stripe exactly one px left. The lean matches the
+  // modern tile — "/" on the y-down pixel canvas, i.e. a stripe cell repeats one px left, one down.
+  let hatchCells = (0 ..< 8).flatMap { y in (1 ..< 8).map { (x: $0, y: y) } }
+  try require(hatchCells.allSatisfy {
+                hatchStripeHit($0.x, $0.y, phase: 1) == hatchStripeHit($0.x + 1, $0.y, phase: 0)
+              },
+              "drain-hatch", "pixel-drift-direction",
+              "a hatch phase step did not shift the pixel stripes one px left")
+  try require(hatchCells.allSatisfy {
+                hatchStripeHit($0.x, $0.y, phase: 0) == hatchStripeHit($0.x - 1, $0.y + 1, phase: 0)
+              },
+              "drain-hatch", "pixel-stripe-lean",
+              "the pixel stripes did not lean like the modern tile")
   try require(activityHatchRGB(75, dark: true) == (32, 62, 39)
                 && emptyHatchRGB(dark: true) == (95, 95, 95)
                 && emptyHatchRGB(dark: false) == (190, 190, 190),
@@ -1925,6 +1938,15 @@ private func runCoreSelfTest() throws {
                 && (stripes?.frame.width ?? 0) == (clip?.frame.width ?? 0) + HATCH_PITCH_PT,
               "drain-hatch", "modern-layer-geometry",
               "hatch layer geometry did not match the battery fill")
+  // Drain, not charge: the stripes travel exactly one pitch left per hatch period
+  let drift = stripes?.animation(forKey: "drain") as? CABasicAnimation
+  let driftFrom = (drift?.fromValue as? NSNumber)?.doubleValue
+  let driftTo = (drift?.toValue as? NSNumber)?.doubleValue
+  try require(driftFrom != nil && driftTo != nil
+                && driftTo! == driftFrom! - Double(HATCH_PITCH_PT)
+                && drift?.duration == HATCH_PERIOD && drift?.repeatCount == .infinity,
+              "drain-hatch", "modern-drift-direction",
+              "the drain animation did not drift one pitch left over one hatch period")
   // A second call with nothing changed must not restart the running "drain" animation
   hatchModeDelegate.updateActivityAnimation()
   let clipReused = hatchModeDelegate.activityLayers[.claude]
