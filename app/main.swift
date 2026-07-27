@@ -2361,6 +2361,8 @@ private func runCoreSelfTest() throws {
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
     "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
     "Battery color", "Custom…", "Settings",
+    "Hue", "Saturation", "Brightness", "Preview", "Done",
+    "Default — follows light and dark", "Battery size and Cat apply to pixel batteries only.",
     "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
   ]
   let missingTranslations = settingsStrings.flatMap { key in
