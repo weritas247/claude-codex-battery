@@ -199,6 +199,13 @@ private let TR: [String: [String: String]] = [
     "es": "Baterías modernas",
   ],
   "Menu bar items": ["ko": "메뉴 막대 표시 항목", "ja": "メニューバー項目", "zh-Hans": "菜单栏项目", "zh-Hant": "選單列項目", "es": "Elementos de la barra"],
+  "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.": [
+    "ko": "일반 배터리는 선택한 한도 중 가장 빠듯한 값을 보여주고, 픽셀 배터리는 한도마다 하나씩 그립니다. Claude Fable은 기본으로 꺼져 있습니다.",
+    "ja": "標準バッテリーは選択した上限のうち最も厳しい値を表示し、ピクセルバッテリーは上限ごとに1つ表示します。Claude Fableは既定でオフです。",
+    "zh-Hans": "标准电池显示所选限额中最紧张的一项；像素电池为每个限额各显示一个。Claude Fable 默认关闭。",
+    "zh-Hant": "標準電池顯示所選額度中最吃緊的一項；像素電池為每個額度各顯示一個。Claude Fable 預設關閉。",
+    "es": "Las baterías modernas muestran el límite más ajustado de los seleccionados; las pixel muestran uno por límite. Claude Fable está desactivado por defecto.",
+  ],
   "Claude 5h": ["ko": "Claude 5시간", "ja": "Claude 5時間", "zh-Hans": "Claude 5 小时", "zh-Hant": "Claude 5 小時", "es": "Claude 5 h"],
   "Claude week": ["ko": "Claude 주간", "ja": "Claude 週間", "zh-Hans": "Claude 每周", "zh-Hant": "Claude 每週", "es": "Claude semanal"],
   "Claude Fable": ["ko": "Claude Fable", "ja": "Claude Fable", "zh-Hans": "Claude Fable", "zh-Hant": "Claude Fable", "es": "Claude Fable"],

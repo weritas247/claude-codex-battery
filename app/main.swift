@@ -931,7 +931,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func heading(_ stack: NSStackView, _ text: String) { let label = NSTextField(labelWithString: text); label.font = .boldSystemFont(ofSize: 17); stack.addArrangedSubview(label) }
     func separator(_ stack: NSStackView) { let box = NSBox(); box.boxType = .separator; box.translatesAutoresizingMaskIntoConstraints = false; box.widthAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true; stack.addArrangedSubview(box) }
-    func note(_ stack: NSStackView, _ text: String) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; stack.addArrangedSubview(label) }
+    func note(_ stack: NSStackView, _ text: String, lines: Int = 2) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = lines; stack.addArrangedSubview(label) }
     func actionButton(_ title: String, _ selector: Selector) -> NSButton { NSButton(title: title, target: self, action: selector) }
     func colorSwatch(_ hex: String?) -> NSButton {
       let b = NSButton(title: "", target: self, action: #selector(settingsBatteryColorChanged(_:)))
@@ -982,7 +982,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     applyPixelOnlyAvailability()
 
     let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
-    heading(limits, tr("Menu bar items")); note(limits, tr("Select the limits shown in the compact menu bar indicator. Detailed usage remains available in the dropdown.")); separator(limits)
+    heading(limits, tr("Menu bar items")); note(limits, tr("Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default."), lines: 3); separator(limits)
     let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"), ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"), ("codexWeek", "Codex week")]
     var metricButtons: [NSButton] = []
     for (key, title) in choices {
@@ -2329,6 +2329,7 @@ private func runCoreSelfTest() throws {
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
     "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
     "Battery color", "Custom…", "Settings",
+    "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
   ]
   let missingTranslations = settingsStrings.flatMap { key in
     SUPPORTED_LANGS.filter { $0 != "en" && tr(key, language: $0) == key }.map { "\(key)/\($0)" }
