@@ -1018,7 +1018,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       s.widthAnchor.constraint(equalToConstant: 240).isActive = true
       return s
     }
-    let hue = slider(Double(BATTERY_GREEN_HUE_MIN), Double(BATTERY_GREEN_HUE_MAX), Double(start.hue))
+    let hue = slider(Double(BATTERY_GREEN_HUE_MIN), Double(BATTERY_GREEN_HUE_MAX),
+                     Double(max(BATTERY_GREEN_HUE_MIN, min(BATTERY_GREEN_HUE_MAX, start.hue))))
     let sat = slider(0.35, 1.0, Double(max(0.35, min(1.0, start.saturation))))
     let bri = slider(0.25, 0.95, Double(max(0.25, min(0.95, start.brightness))))
     colorSheetSliders = (hue, sat, bri)
@@ -1044,15 +1045,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       done.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
     ])
     colorSheet = sheet
-    colorSheetSliderChanged() // seed the preview and persist the starting color
+    updateBatteryColorPreview() // seed the preview only; do not persist until a real slider interaction
     parent.beginSheet(sheet, completionHandler: nil)
   }
 
-  @objc func colorSheetSliderChanged() {
-    guard let s = colorSheetSliders else { return }
-    let hex = hexFromHSB(hue: CGFloat(s.hue.doubleValue), saturation: CGFloat(s.saturation.doubleValue),
-                         brightness: CGFloat(s.brightness.doubleValue))
+  // The preview reflects the sliders; persistence happens only on a real interaction, so merely
+  // opening the sheet can't replace the adaptive default with a fixed hex.
+  private func currentSheetHex() -> String? {
+    guard let s = colorSheetSliders else { return nil }
+    return hexFromHSB(hue: CGFloat(s.hue.doubleValue), saturation: CGFloat(s.saturation.doubleValue),
+                      brightness: CGFloat(s.brightness.doubleValue))
+  }
+
+  private func updateBatteryColorPreview() {
+    guard let hex = currentSheetHex() else { return }
     colorSheetPreview?.layer?.backgroundColor = hexColor(hex)?.cgColor
+  }
+
+  @objc func colorSheetSliderChanged() {
+    guard let hex = currentSheetHex() else { return }
+    updateBatteryColorPreview()
     UserDefaults.standard.set(hex, forKey: BATTERY_GREEN_KEY)
     highlightColorSwatches(currentBatteryGreen()); rerender()
   }
