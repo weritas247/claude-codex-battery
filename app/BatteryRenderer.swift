@@ -197,6 +197,14 @@ func currentBatteryGreen() -> String? {
                           ?? UserDefaults.standard.string(forKey: BATTERY_GREEN_KEY))
 }
 
+// Green hue window (NSColor hue is 0…1). The settings UI cannot produce anything outside it.
+let BATTERY_GREEN_HUE_MIN: CGFloat = 85.0 / 360.0
+let BATTERY_GREEN_HUE_MAX: CGFloat = 170.0 / 360.0
+
+// Preset swatches, all inside the hue window above. The row also carries a "default" chip
+// ahead of these, which clears the key and restores the built-in dark/light pair.
+let BATTERY_GREEN_PRESETS = ["#0F5132", "#198532", "#34C759", "#00A878", "#6FBF4A"]
+
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)
 
 // Logical pixel canvas (SCALE=2 — draws at 2x pixels for Retina)

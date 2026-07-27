@@ -119,6 +119,13 @@ private let TR: [String: [String: String]] = [
     "ko": "설정", "ja": "設定", "zh-Hans": "设置", "zh-Hant": "設定", "es": "Ajustes",
   ],
   "Cat": ["ko": "고양이", "ja": "ネコ", "zh-Hans": "猫", "zh-Hant": "貓", "es": "Gato"],
+  "Battery color": ["ko": "배터리 색상", "ja": "バッテリーの色", "zh-Hans": "电池颜色", "zh-Hant": "電池顏色", "es": "Color de la batería"],
+  "Custom…": ["ko": "사용자 지정…", "ja": "カスタム…", "zh-Hans": "自定…", "zh-Hant": "自訂…", "es": "Personalizado…"],
+  "Default — follows light and dark": [
+    "ko": "기본 — 다크/라이트에 맞춰 자동", "ja": "デフォルト — ライト/ダークに追従",
+    "zh-Hans": "默认 — 跟随浅色/深色", "zh-Hant": "預設 — 跟隨淺色/深色",
+    "es": "Predeterminado — sigue claro y oscuro",
+  ],
   "Wide face": [
     "ko": "넓적 얼굴 (볼터치)", "ja": "丸顔 (ほっぺ)", "zh-Hans": "圆脸（腮红）",
     "zh-Hant": "圓臉（腮紅）", "es": "Cara ancha",

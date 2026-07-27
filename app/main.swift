@@ -259,6 +259,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var catIdx = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
+  var settingsColorSwatches: [NSButton] = []
 
   let presentationConfiguration: PresentationConfiguration
   private let collector: SnapshotCollector
@@ -923,6 +924,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func separator(_ stack: NSStackView) { let box = NSBox(); box.boxType = .separator; box.translatesAutoresizingMaskIntoConstraints = false; box.widthAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true; stack.addArrangedSubview(box) }
     func note(_ stack: NSStackView, _ text: String) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; stack.addArrangedSubview(label) }
     func actionButton(_ title: String, _ selector: Selector) -> NSButton { NSButton(title: title, target: self, action: selector) }
+    func colorSwatch(_ hex: String?) -> NSButton {
+      let b = NSButton(title: "", target: self, action: #selector(settingsBatteryColorChanged(_:)))
+      b.isBordered = false; b.wantsLayer = true; b.setButtonType(.momentaryChange)
+      b.identifier = NSUserInterfaceItemIdentifier(hex ?? "default")
+      b.toolTip = hex ?? tr("Default — follows light and dark")
+      b.translatesAutoresizingMaskIntoConstraints = false
+      b.widthAnchor.constraint(equalToConstant: 22).isActive = true
+      b.heightAnchor.constraint(equalToConstant: 22).isActive = true
+      b.layer?.cornerRadius = 5
+      b.layer?.backgroundColor = (hex.flatMap(hexColor) ?? NSColor(calibratedRed: 42 / 255.0, green: 176 / 255.0, blue: 70 / 255.0, alpha: 1)).cgColor
+      return b
+    }
+    func colorRow() -> NSStackView {
+      let saved = currentBatteryGreen()
+      settingsColorSwatches = ([nil] + BATTERY_GREEN_PRESETS.map { Optional($0) }).map { colorSwatch($0) }
+      let stack = NSStackView(views: settingsColorSwatches)
+      stack.orientation = .horizontal; stack.spacing = 6
+      let divider = NSBox(); divider.boxType = .separator; divider.translatesAutoresizingMaskIntoConstraints = false
+      divider.heightAnchor.constraint(equalToConstant: 20).isActive = true
+      stack.addArrangedSubview(divider)
+      stack.addArrangedSubview(actionButton(tr("Custom…"), #selector(showBatteryColorSheet)))
+      highlightColorSwatches(saved)
+      return stack
+    }
 
     let (_, general) = page(tr("General"), icon: "gearshape")
     heading(general, tr("General")); note(general, tr("Configure how Claude and Codex usage appears on this Mac.")); separator(general)
@@ -937,6 +962,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
       [NSTextField(labelWithString: tr("Battery size")), popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))],
       [NSTextField(labelWithString: tr("Cat")), popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))],
+      [NSTextField(labelWithString: tr("Battery color")), colorRow()],
     ]); appearance.rowSpacing = 14; appearance.columnSpacing = 24; display.addArrangedSubview(appearance)
 
     let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
@@ -962,6 +988,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
   }
 
+  func highlightColorSwatches(_ selected: String?) {
+    for b in settingsColorSwatches {
+      let id = b.identifier?.rawValue
+      let isOn = (selected == nil && id == "default") || (selected != nil && id == selected)
+      b.layer?.borderWidth = isOn ? 2.5 : 0
+      b.layer?.borderColor = isOn ? NSColor.controlAccentColor.cgColor : nil
+    }
+  }
+  @objc func settingsBatteryColorChanged(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue else { return }
+    if id == "default" { UserDefaults.standard.removeObject(forKey: BATTERY_GREEN_KEY) }
+    else { UserDefaults.standard.set(id, forKey: BATTERY_GREEN_KEY) }
+    highlightColorSwatches(currentBatteryGreen()); rerender()
+  }
+  // Placeholder for the upcoming custom-color sheet (sliders + preview). Task 5 replaces this body;
+  // this stub only exists so the "Custom…" button's #selector reference compiles in the meantime.
+  @objc func showBatteryColorSheet() {}
   @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); rerender() }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
@@ -2155,6 +2198,17 @@ private func runCoreSelfTest() throws {
               "the dropdown gauge ignored the custom green or leaked it into a warning band")
   try require(usageColor(forRemaining: 75, custom: "bogus").hex == "#348A45",
               "battery-color", "gauge-malformed", "a malformed custom color was not ignored")
+  try require(BATTERY_GREEN_PRESETS.count == 5
+                && BATTERY_GREEN_PRESETS.allSatisfy { rgbFromHex($0) != nil },
+              "battery-color", "presets-parse", "a preset swatch is not a valid hex color")
+  // Every preset must sit inside the green hue window the custom sheet also enforces.
+  try require(BATTERY_GREEN_PRESETS.allSatisfy { hex in
+                guard let rgb = rgbFromHex(hex) else { return false }
+                let hue = NSColor(calibratedRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
+                                  blue: CGFloat(rgb.b) / 255, alpha: 1).hueComponent
+                return hue >= BATTERY_GREEN_HUE_MIN && hue <= BATTERY_GREEN_HUE_MAX
+              },
+              "battery-color", "presets-in-gamut", "a preset swatch falls outside the green hue range")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
