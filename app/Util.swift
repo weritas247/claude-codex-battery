@@ -90,6 +90,16 @@ func hexColor(_ s: String) -> NSColor? {
                  blue: CGFloat(v & 0xff) / 255, alpha: 1)
 }
 
+// Hex → raw RGB bytes. Deliberately not routed through hexColor(): that builds an sRGB NSColor
+// while the battery renderer works in calibrated RGB, and round-tripping the two shifts the color.
+func rgbFromHex(_ s: String) -> (r: UInt8, g: UInt8, b: UInt8)? {
+  var h = s
+  guard h.hasPrefix("#") else { return nil }
+  h.removeFirst()
+  guard h.count == 6, let v = Int(h, radix: 16) else { return nil }
+  return (UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff))
+}
+
 // Run an external command (with timeout, nil on failure) — for ccusage/security only
 func runCmd(_ bin: String, _ args: [String], timeout: TimeInterval = 10) -> String? {
   let p = Process()

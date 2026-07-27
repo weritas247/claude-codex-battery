@@ -2055,6 +2055,23 @@ private func runCoreSelfTest() throws {
 
   print("self-test-core: procargs PASS")
 
+  let parsedGreen = rgbFromHex("#198532")
+  let parsedWhite = rgbFromHex("#FFFFFF")
+  let parsedBlack = rgbFromHex("#000000")
+  try require(parsedGreen?.r == 25 && parsedGreen?.g == 133 && parsedGreen?.b == 50
+                && parsedWhite?.r == 255 && parsedWhite?.g == 255 && parsedWhite?.b == 255
+                && parsedBlack?.r == 0 && parsedBlack?.g == 0 && parsedBlack?.b == 0,
+              "battery-color", "hex-parse", "rgbFromHex mis-parsed a valid color")
+  try require(rgbFromHex("198532") == nil && rgbFromHex("#1985") == nil
+                && rgbFromHex("#GGGGGG") == nil && rgbFromHex("") == nil
+                && rgbFromHex("#1985327") == nil,
+              "battery-color", "hex-reject", "rgbFromHex accepted a malformed value")
+  try require(validatedBatteryGreen("#00A878") == "#00A878"
+                && validatedBatteryGreen("not-a-color") == nil
+                && validatedBatteryGreen(nil) == nil,
+              "battery-color", "validate", "a malformed saved color was not rejected")
+  print("self-test-core: battery-color PASS")
+
   print("self-test-core: PASS")
 }
 

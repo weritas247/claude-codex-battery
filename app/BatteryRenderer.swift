@@ -182,6 +182,21 @@ func isMetricVisible(_ key: String) -> Bool {
   return UserDefaults.standard.bool(forKey: "visible_\(key)")
 }
 
+let BATTERY_GREEN_KEY = "batteryGreen"
+
+// Only the syntax is validated. The settings UI cannot produce a non-green, and silently
+// correcting a hand-edited value would make the picked color differ from the drawn one.
+func validatedBatteryGreen(_ raw: String?) -> String? {
+  guard let raw, rgbFromHex(raw) != nil else { return nil }
+  return raw
+}
+
+// User's green for the healthy band; nil = the built-in dark/light pair.
+func currentBatteryGreen() -> String? {
+  validatedBatteryGreen(ProcessInfo.processInfo.environment["CCB_BATTERY_GREEN"]
+                          ?? UserDefaults.standard.string(forKey: BATTERY_GREEN_KEY))
+}
+
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)
 
 // Logical pixel canvas (SCALE=2 — draws at 2x pixels for Retina)
