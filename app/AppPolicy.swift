@@ -83,6 +83,10 @@ struct PresentationConfiguration {
   let goldTestEnabled: () -> Bool
   let forcedCatState: () -> CatState?
   let language: () -> String
+  // var with a default so the memberwise init keeps it optional: every existing construction
+  // site compiles untouched and defaults to "no custom color", which is what the colour
+  // regression checks need. A `let` here would drop it from the memberwise init entirely.
+  var batteryGreen: () -> String? = { nil }
 
   static let production = PresentationConfiguration(
     isMetricVisible: { productionMetricVisibility($0) },
@@ -94,6 +98,7 @@ struct PresentationConfiguration {
       guard let raw = ProcessInfo.processInfo.environment["CCB_CAT_TEST"] else { return nil }
       return CatState(rawValue: raw)
     },
-    language: { UI_LANG }
+    language: { UI_LANG },
+    batteryGreen: { currentBatteryGreen() }
   )
 }

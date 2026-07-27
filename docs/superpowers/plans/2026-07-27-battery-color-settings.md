@@ -897,13 +897,16 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```swift
   // Every settings-window string must exist in all six languages — a missing key silently
   // falls back to English and produces a half-translated window.
+  // "General" (es) and "Claude Fable" (all languages) are spelled the same as the English
+  // source, so this scan can't tell a real translation from a fallback. Both are verified
+  // by hand and deliberately excluded.
   let settingsStrings = [
-    "General", "Configure how Claude and Codex usage appears on this Mac.",
+    "Configure how Claude and Codex usage appears on this Mac.",
     "Display", "Appearance", "Choose the visual style and optional companion shown in the menu bar.",
     "Limits", "Integration", "Integrations",
     "Optional tools add cost breakdowns and provide quick access to the project.",
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
-    "Menu bar items", "Claude 5h", "Claude week", "Claude Fable", "Codex 5h", "Codex week",
+    "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
     "Battery color", "Custom…", "Settings",
   ]
   let missingTranslations = settingsStrings.flatMap { key in
@@ -926,7 +929,7 @@ Expected: FAIL — `self-test-core: FAIL: battery-color/settings-i18n: untransla
 
 ```swift
   "Settings": ["ko": "설정", "ja": "設定", "zh-Hans": "设置", "zh-Hant": "設定", "es": "Ajustes"],
-  "General": ["ko": "일반", "ja": "一般", "zh-Hans": "通用", "zh-Hant": "一般", "es": "General "],
+  "General": ["ko": "일반", "ja": "一般", "zh-Hans": "通用", "zh-Hant": "一般", "es": "General"],
   "Configure how Claude and Codex usage appears on this Mac.": [
     "ko": "이 Mac에서 Claude와 Codex 사용량을 어떻게 표시할지 설정합니다.",
     "ja": "このMacでClaudeとCodexの使用量をどう表示するか設定します。",
@@ -963,11 +966,12 @@ Expected: FAIL — `self-test-core: FAIL: battery-color/settings-i18n: untransla
   ],
 ```
 
-`"General "` 의 스페인어에 붙은 뒤쪽 공백은 오타다 — `"General"` 로 고쳐 쓰되, 그러면 `es` 번역이 영어 원문과 같아져 Step 1의 검사가 오탐한다. `settingsStrings` 배열에서 `"General"` 을 빼고 다음 주석을 남긴다:
+**동형어 처리:** `"General"` 의 스페인어 번역은 영어 원문과 철자가 같다. Step 1의 검사는 "번역문 == 영어 원문"을 미번역으로 판정하므로 이 항목은 오탐한다. Step 1에서 만든 `settingsStrings` 배열에서 `"General"` 을 **빼고**, 배열 바로 위에 이유를 남긴다:
 
 ```swift
-  // "General" is spelled the same in English and Spanish, so the missing-translation scan
-  // can't distinguish a real translation from a fallback. Verified by hand instead.
+  // "General" (es) and "Claude Fable" (all languages) are spelled the same as the English
+  // source, so this scan can't tell a real translation from a fallback. Both are verified
+  // by hand and deliberately excluded.
 ```
 
 - [ ] **Step 4: `ko` 만 있는 항목을 마저 채운다**
@@ -979,11 +983,10 @@ Expected: FAIL — `self-test-core: FAIL: battery-color/settings-i18n: untransla
   "Claude week": ["ko": "Claude 주간", "ja": "Claude 週間", "zh-Hans": "Claude 每周", "zh-Hant": "Claude 每週", "es": "Claude semanal"],
   "Claude Fable": ["ko": "Claude Fable", "ja": "Claude Fable", "zh-Hans": "Claude Fable", "zh-Hant": "Claude Fable", "es": "Claude Fable"],
   "Codex 5h": ["ko": "Codex 5시간", "ja": "Codex 5時間", "zh-Hans": "Codex 5 小时", "zh-Hant": "Codex 5 小時", "es": "Codex 5 h"],
-  "Codex week": ["ko": "Codex 주간", "ja": "Codex 주간", "zh-Hans": "Codex 每周", "zh-Hant": "Codex 每週", "es": "Codex semanal"],
+  "Codex week": ["ko": "Codex 주간", "ja": "Codex 週間", "zh-Hans": "Codex 每周", "zh-Hant": "Codex 每週", "es": "Codex semanal"],
 ```
 
-`"Claude Fable"` 은 전 언어가 동일한 고유명사다. Step 1의 `settingsStrings` 배열에서 빼고 이유를 주석으로 남긴다.
-`"Codex week"` 의 `ja` 값은 오타다 — `"Codex 週間"` 으로 고친다.
+`"Claude Fable"` 은 제품명이라 6개 언어가 모두 같다. 위 동형어 처리와 같은 이유로 `settingsStrings` 배열에서 뺀다 (Step 3의 주석이 두 경우를 함께 설명한다).
 
 - [ ] **Step 5: 죽은 번역 항목을 지운다**
 

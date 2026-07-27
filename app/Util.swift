@@ -72,22 +72,30 @@ struct UsageColor {
   var hex: String { String(format: "#%02X%02X%02X", r, g, b) }
 }
 
-// Single source of truth for both the menu-bar capsule and dropdown gauge.
-func usageColor(forRemaining remaining: Double) -> UsageColor {
+// Dropdown gauge colors. Menu bar capsule uses heatRemain in BatteryRenderer. Shares custom green; separate built-ins.
+func usageColor(forRemaining remaining: Double, custom: String? = nil) -> UsageColor {
   switch remainingBand(remaining) {
   case .red: return UsageColor(r: 255, g: 105, b: 97)
   case .amber: return UsageColor(r: 255, g: 179, b: 64)
-  case .green: return UsageColor(r: 52, g: 138, b: 69)
+  case .green:
+    if let custom, let rgb = rgbFromHex(custom) { return UsageColor(r: rgb.r, g: rgb.g, b: rgb.b) }
+    return UsageColor(r: 52, g: 138, b: 69)
   }
 }
 
 func hexColor(_ s: String) -> NSColor? {
+  guard let rgb = rgbFromHex(s) else { return nil }
+  return NSColor(red: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: 1)
+}
+
+// Hex → raw RGB bytes. Deliberately not routed through hexColor(): that builds an sRGB NSColor
+// while the battery renderer works in calibrated RGB, and round-tripping the two shifts the color.
+func rgbFromHex(_ s: String) -> (r: UInt8, g: UInt8, b: UInt8)? {
   var h = s
   guard h.hasPrefix("#") else { return nil }
   h.removeFirst()
   guard h.count == 6, let v = Int(h, radix: 16) else { return nil }
-  return NSColor(red: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
-                 blue: CGFloat(v & 0xff) / 255, alpha: 1)
+  return (UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff))
 }
 
 // Run an external command (with timeout, nil on failure) — for ccusage/security only

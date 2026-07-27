@@ -243,6 +243,15 @@ enum RefreshTrigger: Equatable {
   case manual
 }
 
+// The modern renderer reads neither batterySize nor catStyle, so those controls only apply to pixel mode.
+func pixelOnlyControlsEnabled(_ displayMode: String) -> Bool { displayMode == "pixel" }
+
+// AppKit returns NSNotFound when no tab is selected, and a rebuilt tab view may have fewer items.
+func restoredTabIndex(_ index: Int, count: Int) -> Int {
+  guard index != NSNotFound, index >= 0, index < count else { return 0 }
+  return index
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var statusItem: NSStatusItem?
   var timer: Timer?
@@ -259,6 +268,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var catIdx = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
+  var settingsTabView: NSTabView?
+  var settingsColorSwatches: [NSButton] = []
+  var settingsSizePopup: NSPopUpButton?
+  var settingsCatPopup: NSPopUpButton?
+  var settingsPixelOnlyNote: NSTextField?
+  var colorSheet: NSWindow?
+  var colorSheetPreview: NSView?
+  var colorSheetSliders: (hue: NSSlider, saturation: NSSlider, brightness: NSSlider)?
 
   let presentationConfiguration: PresentationConfiguration
   private let collector: SnapshotCollector
@@ -468,7 +485,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let wide = fillW >= HATCH_MIN_FILL_PT
       let rect = CGRect(x: bodyX + 2, y: originY + 5,
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
-      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
+      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark,
+                                             custom: presentationConfiguration.batteryGreen())
+                          : emptyHatchRGB(dark: dark)
       let alpha: CGFloat = wide ? 0.85 : 0.55
       // Rebuild key = exactly what the stripe tile is baked from. Everything else about a refresh —
       // a narrower fill, a new percentage — is a resize we can apply in place, and must: rebuilding
@@ -738,7 +757,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state = catState(snapshot, configuration: presentationConfiguration)
     let modern = presentationConfiguration.displayMode() == "modern"
     let image = modern
-      ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets)
+      ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets,
+                                 configuration: presentationConfiguration)
       : renderBatteryImage(dark: dark, items: items, cat: state, catFrameIndex: catIdx,
                            configuration: presentationConfiguration)
     let hasDisplayData = modern ? !summaries.isEmpty : !items.isEmpty
@@ -750,7 +770,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     let language = presentationConfiguration.language()
     let menu = buildMenu(snapshot, swiftBarDup: swiftBarDuplicate, target: self,
-                         assets: assets, language: language)
+                         assets: assets, language: language,
+                         batteryGreen: presentationConfiguration.batteryGreen())
     let accessibilitySummary = statusAccessibilitySummary(
       items: items, summaries: summaries, modern: modern, hasDisplayData: hasDisplayData,
       language: language)
@@ -873,6 +894,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       try? code.write(toFile: LANG_FILE, atomically: true, encoding: .utf8)
     }
     UI_LANG = resolveLang()
+    rebuildSettingsWindowForLanguage()
     rerender()
   }
 
@@ -897,7 +919,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.title = tr("Settings")
     window.isReleasedWhenClosed = false
     window.delegate = self
-    let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
+    installSettingsContent(in: window, selectedTab: 0)
+    settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+  }
+
+  // rerender() only rebuilds the menu and the status image, so an open settings window would
+  // keep the old language — the one surface the user is looking at when they change it.
+  func rebuildSettingsWindowForLanguage() {
+    guard let window = settingsWindow else { return }
+    var rawIndex = NSNotFound
+    if let tabs = settingsTabView, let selected = tabs.selectedTabViewItem {
+      rawIndex = tabs.indexOfTabViewItem(selected)
+    }
+    let index = restoredTabIndex(rawIndex, count: settingsTabView?.numberOfTabViewItems ?? 0)
+    window.title = tr("Settings")
+    installSettingsContent(in: window, selectedTab: index)
+  }
+
+  private func installSettingsContent(in window: NSWindow, selectedTab: Int) {
+    let tabs = buildSettingsTabs()
     let content = NSView(); content.addSubview(tabs); window.contentView = content
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
@@ -905,6 +945,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
       tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18)
     ])
+    if tabs.numberOfTabViewItems > 0 { tabs.selectTabViewItem(at: restoredTabIndex(selectedTab, count: tabs.numberOfTabViewItems)) }
+    settingsTabView = tabs
+  }
+
+  private func buildSettingsTabs() -> NSTabView {
+    let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
     func page(_ title: String, icon: String) -> (NSTabViewItem, NSStackView) {
       let view = NSView(); let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16; stack.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview(stack)
@@ -917,8 +963,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func heading(_ stack: NSStackView, _ text: String) { let label = NSTextField(labelWithString: text); label.font = .boldSystemFont(ofSize: 17); stack.addArrangedSubview(label) }
     func separator(_ stack: NSStackView) { let box = NSBox(); box.boxType = .separator; box.translatesAutoresizingMaskIntoConstraints = false; box.widthAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true; stack.addArrangedSubview(box) }
-    func note(_ stack: NSStackView, _ text: String) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; stack.addArrangedSubview(label) }
+    func note(_ stack: NSStackView, _ text: String, lines: Int = 2) { let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = lines; stack.addArrangedSubview(label) }
     func actionButton(_ title: String, _ selector: Selector) -> NSButton { NSButton(title: title, target: self, action: selector) }
+    func colorSwatch(_ hex: String?) -> NSButton {
+      let b = NSButton(title: "", target: self, action: #selector(settingsBatteryColorChanged(_:)))
+      b.isBordered = false; b.wantsLayer = true; b.setButtonType(.momentaryChange)
+      b.identifier = NSUserInterfaceItemIdentifier(hex ?? "default")
+      b.toolTip = hex ?? tr("Default — follows light and dark")
+      b.translatesAutoresizingMaskIntoConstraints = false
+      b.widthAnchor.constraint(equalToConstant: 22).isActive = true
+      b.heightAnchor.constraint(equalToConstant: 22).isActive = true
+      b.layer?.cornerRadius = 5
+      b.layer?.backgroundColor = (hex.flatMap(hexColor) ?? NSColor(calibratedRed: 42 / 255.0, green: 176 / 255.0, blue: 70 / 255.0, alpha: 1)).cgColor
+      return b
+    }
+    func colorRow() -> NSStackView {
+      let saved = currentBatteryGreen()
+      settingsColorSwatches = ([nil] + BATTERY_GREEN_PRESETS.map { Optional($0) }).map { colorSwatch($0) }
+      let stack = NSStackView(views: settingsColorSwatches)
+      stack.orientation = .horizontal; stack.spacing = 6
+      let divider = NSBox(); divider.boxType = .separator; divider.translatesAutoresizingMaskIntoConstraints = false
+      divider.heightAnchor.constraint(equalToConstant: 20).isActive = true
+      stack.addArrangedSubview(divider)
+      stack.addArrangedSubview(actionButton(tr("Custom…"), #selector(showBatteryColorSheet)))
+      highlightColorSwatches(saved)
+      return stack
+    }
 
     let (_, general) = page(tr("General"), icon: "gearshape")
     heading(general, tr("General")); note(general, tr("Configure how Claude and Codex usage appears on this Mac.")); separator(general)
@@ -929,14 +999,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     let (_, display) = page(tr("Display"), icon: "paintbrush")
     heading(display, tr("Appearance")); note(display, tr("Choose the visual style and optional companion shown in the menu bar.")); separator(display)
+    let sizePopup = popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))
+    let catPopup = popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))
+    settingsSizePopup = sizePopup; settingsCatPopup = catPopup
     let appearance = NSGridView(views: [
       [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
-      [NSTextField(labelWithString: tr("Battery size")), popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))],
-      [NSTextField(labelWithString: tr("Cat")), popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))],
+      [NSTextField(labelWithString: tr("Battery size")), sizePopup],
+      [NSTextField(labelWithString: tr("Cat")), catPopup],
+      [NSTextField(labelWithString: tr("Battery color")), colorRow()],
     ]); appearance.rowSpacing = 14; appearance.columnSpacing = 24; display.addArrangedSubview(appearance)
+    let pixelNote = NSTextField(wrappingLabelWithString: tr("Battery size and Cat apply to pixel batteries only."))
+    pixelNote.textColor = .secondaryLabelColor; pixelNote.font = .systemFont(ofSize: 12); pixelNote.maximumNumberOfLines = 2
+    settingsPixelOnlyNote = pixelNote; display.addArrangedSubview(pixelNote)
+    applyPixelOnlyAvailability()
 
     let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
-    heading(limits, tr("Menu bar items")); note(limits, tr("Select the limits shown in the compact menu bar indicator. Detailed usage remains available in the dropdown.")); separator(limits)
+    heading(limits, tr("Menu bar items")); note(limits, tr("Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default."), lines: 3); separator(limits)
     let choices: [(String, String)] = [("claude5", "Claude 5h"), ("claudeWeek", "Claude week"), ("claudeFable", "Claude Fable"), ("codex5", "Codex 5h"), ("codexWeek", "Codex week")]
     var metricButtons: [NSButton] = []
     for (key, title) in choices {
@@ -955,17 +1033,106 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     heading(updates, tr("Updates")); note(updates, tr("The app checks for updates once a day. You can review the source and releases on GitHub.")); separator(updates)
     updates.addArrangedSubview(NSTextField(labelWithString: "Claude & Codex Usage Battery v\(APP_VERSION)")); updates.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings)))
 
-    settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    return tabs
   }
 
-  @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); rerender() }
+  func highlightColorSwatches(_ selected: String?) {
+    for b in settingsColorSwatches {
+      let id = b.identifier?.rawValue
+      let isOn = (selected == nil && id == "default") || (selected != nil && id == selected)
+      b.layer?.borderWidth = isOn ? 2.5 : 0
+      b.layer?.borderColor = isOn ? NSColor.controlAccentColor.cgColor : nil
+    }
+  }
+  @objc func settingsBatteryColorChanged(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue else { return }
+    if id == "default" { UserDefaults.standard.removeObject(forKey: BATTERY_GREEN_KEY) }
+    else { UserDefaults.standard.set(id, forKey: BATTERY_GREEN_KEY) }
+    highlightColorSwatches(currentBatteryGreen()); rerender()
+  }
+  @objc func showBatteryColorSheet() {
+    guard let parent = settingsWindow else { return }
+    let start = hsbFromHex(currentBatteryGreen() ?? "#198532") ?? (hue: 0.35, saturation: 0.8, brightness: 0.55)
+    let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 260),
+                         styleMask: [.titled], backing: .buffered, defer: false)
+    sheet.title = tr("Battery color")
+    func slider(_ min: Double, _ max: Double, _ value: Double) -> NSSlider {
+      let s = NSSlider(value: value, minValue: min, maxValue: max, target: self,
+                       action: #selector(colorSheetSliderChanged))
+      s.translatesAutoresizingMaskIntoConstraints = false
+      s.widthAnchor.constraint(equalToConstant: 240).isActive = true
+      return s
+    }
+    let hue = slider(Double(BATTERY_GREEN_HUE_MIN), Double(BATTERY_GREEN_HUE_MAX),
+                     Double(max(BATTERY_GREEN_HUE_MIN, min(BATTERY_GREEN_HUE_MAX, start.hue))))
+    let sat = slider(0.35, 1.0, Double(max(0.35, min(1.0, start.saturation))))
+    let bri = slider(0.25, 0.95, Double(max(0.25, min(0.95, start.brightness))))
+    colorSheetSliders = (hue, sat, bri)
+    let preview = NSView(); preview.wantsLayer = true; preview.translatesAutoresizingMaskIntoConstraints = false
+    preview.layer?.cornerRadius = 6
+    preview.widthAnchor.constraint(equalToConstant: 90).isActive = true
+    preview.heightAnchor.constraint(equalToConstant: 34).isActive = true
+    colorSheetPreview = preview
+    let grid = NSGridView(views: [
+      [NSTextField(labelWithString: tr("Hue")), hue],
+      [NSTextField(labelWithString: tr("Saturation")), sat],
+      [NSTextField(labelWithString: tr("Brightness")), bri],
+      [NSTextField(labelWithString: tr("Preview")), preview],
+    ])
+    grid.rowSpacing = 14; grid.columnSpacing = 18; grid.translatesAutoresizingMaskIntoConstraints = false
+    let done = NSButton(title: tr("Done"), target: self, action: #selector(closeBatteryColorSheet))
+    done.keyEquivalent = "\r"; done.translatesAutoresizingMaskIntoConstraints = false
+    let content = NSView(); content.addSubview(grid); content.addSubview(done); sheet.contentView = content
+    NSLayoutConstraint.activate([
+      grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+      grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+      done.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+      done.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+    ])
+    colorSheet = sheet
+    updateBatteryColorPreview() // seed the preview only; do not persist until a real slider interaction
+    parent.beginSheet(sheet, completionHandler: nil)
+  }
+
+  // The preview reflects the sliders; persistence happens only on a real interaction, so merely
+  // opening the sheet can't replace the adaptive default with a fixed hex.
+  private func currentSheetHex() -> String? {
+    guard let s = colorSheetSliders else { return nil }
+    return hexFromHSB(hue: CGFloat(s.hue.doubleValue), saturation: CGFloat(s.saturation.doubleValue),
+                      brightness: CGFloat(s.brightness.doubleValue))
+  }
+
+  private func updateBatteryColorPreview() {
+    guard let hex = currentSheetHex() else { return }
+    colorSheetPreview?.layer?.backgroundColor = hexColor(hex)?.cgColor
+  }
+
+  @objc func colorSheetSliderChanged() {
+    guard let hex = currentSheetHex() else { return }
+    updateBatteryColorPreview()
+    UserDefaults.standard.set(hex, forKey: BATTERY_GREEN_KEY)
+    highlightColorSwatches(currentBatteryGreen()); rerender()
+  }
+
+  @objc func closeBatteryColorSheet() {
+    guard let sheet = colorSheet else { return }
+    settingsWindow?.endSheet(sheet); colorSheet = nil
+    colorSheetSliders = nil; colorSheetPreview = nil
+  }
+  func applyPixelOnlyAvailability() {
+    let pixel = pixelOnlyControlsEnabled(currentDisplayMode())
+    settingsSizePopup?.isEnabled = pixel
+    settingsCatPopup?.isEnabled = pixel
+    settingsPixelOnlyNote?.isHidden = pixel
+  }
+  @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); applyPixelOnlyAvailability(); rerender() }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
   @objc func settingsLanguageChanged(_ sender: NSPopUpButton) { let codes = ["auto"] + LANG_DISPLAY.map { $0.code }; let item = NSMenuItem(); item.representedObject = codes[sender.indexOfSelectedItem]; setLang(item) }
   @objc func toggleMetric(_ sender: NSButton) { if let key = sender.identifier?.rawValue { UserDefaults.standard.set(sender.state == .on, forKey: key); rerender() } }
   @objc func openGitHubFromSettings() { NSWorkspace.shared.open(URL(string: REPO_URL)!) }
   @objc func closeSettings() { settingsWindow?.close() }
-  func windowWillClose(_ notification: Notification) { settingsWindow = nil }
+  func windowWillClose(_ notification: Notification) { settingsWindow = nil; settingsTabView = nil }
 
   @objc func toggleLoginItem() {
     guard #available(macOS 13.0, *) else { return }
@@ -2054,6 +2221,159 @@ private func runCoreSelfTest() throws {
               "procargs", "short-buffer", "a buffer smaller than the argc header was not rejected")
 
   print("self-test-core: procargs PASS")
+
+  let parsedGreen = rgbFromHex("#198532")
+  let parsedWhite = rgbFromHex("#FFFFFF")
+  let parsedBlack = rgbFromHex("#000000")
+  try require(parsedGreen?.r == 25 && parsedGreen?.g == 133 && parsedGreen?.b == 50
+                && parsedWhite?.r == 255 && parsedWhite?.g == 255 && parsedWhite?.b == 255
+                && parsedBlack?.r == 0 && parsedBlack?.g == 0 && parsedBlack?.b == 0,
+              "battery-color", "hex-parse", "rgbFromHex mis-parsed a valid color")
+  try require(rgbFromHex("198532") == nil && rgbFromHex("#1985") == nil
+                && rgbFromHex("#GGGGGG") == nil && rgbFromHex("") == nil
+                && rgbFromHex("#1985327") == nil,
+              "battery-color", "hex-reject", "rgbFromHex accepted a malformed value")
+  try require(validatedBatteryGreen("#00A878") == "#00A878"
+                && validatedBatteryGreen("not-a-color") == nil
+                && validatedBatteryGreen(nil) == nil,
+              "battery-color", "validate", "a malformed saved color was not rejected")
+  // Green band takes the custom color; amber and red keep the system warning colors.
+  let customHatchGreen = activityHatchRGB(75, dark: true, custom: "#00A878")
+  let customHatchAmber = activityHatchRGB(35, dark: true, custom: "#00A878")
+  let customHatchRed = activityHatchRGB(15, dark: true, custom: "#00A878")
+  try require(customHatchGreen == (0, 59, 42),
+              "battery-color", "custom-green-band", "the custom green did not reach the green band")
+  try require(customHatchAmber == (89, 75, 4) && customHatchRed == (89, 24, 20),
+              "battery-color", "warning-bands-untouched",
+              "a custom green leaked into the amber or red band")
+  try require(activityHatchRGB(75, dark: true) == (9, 47, 18)
+                && activityHatchRGB(75, dark: false) == (15, 62, 25),
+              "battery-color", "default-unchanged",
+              "the built-in green changed when no custom color is set")
+  // Wiring check: the same summaries must render differently once a custom green is injected,
+  // and identically when only the warning bands are on screen.
+  let greenSummaries = [ProviderSummary(provider: .claude, remain: 75)]
+  let redSummaries = [ProviderSummary(provider: .claude, remain: 15)]
+  let plainConfig = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let customConfig = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, batteryGreen: { "#00A878" })
+  func modernBytes(_ summaries: [ProviderSummary], _ configuration: PresentationConfiguration) -> Data? {
+    guard let image = renderModernSummaryImage(dark: true, summaries: summaries,
+                                               assetContext: conversionAssets,
+                                               configuration: configuration),
+          let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let data = cg.dataProvider?.data else { return nil }
+    return data as Data
+  }
+  try require(modernBytes(greenSummaries, plainConfig) != nil
+                && modernBytes(greenSummaries, plainConfig) != modernBytes(greenSummaries, customConfig),
+              "battery-color", "modern-wiring",
+              "renderModernSummaryImage ignored the injected custom green")
+  try require(modernBytes(redSummaries, plainConfig) == modernBytes(redSummaries, customConfig),
+              "battery-color", "modern-red-identical",
+              "a custom green changed the red band in the modern renderer")
+  // Pixel mode writes exact bytes into its canvas, so the fill color can be scanned for directly.
+  func pixelImageContains(_ image: NSImage?, _ rgb: (UInt8, UInt8, UInt8)) -> Bool {
+    guard let image, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let data = cg.dataProvider?.data else { return false }
+    let length = CFDataGetLength(data)
+    guard let ptr = CFDataGetBytePtr(data) else { return false }
+    var offset = 0
+    while offset + 3 < length {
+      if ptr[offset] == rgb.0, ptr[offset + 1] == rgb.1, ptr[offset + 2] == rgb.2 { return true }
+      offset += 4
+    }
+    return false
+  }
+  let pixelPlain = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let pixelCustom = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, batteryGreen: { "#00A878" })
+  let pixelItems = battItems(snapshot, configuration: pixelPlain)
+  let pixelPlainImage = renderBatteryImage(dark: true, items: pixelItems, configuration: pixelPlain)
+  let pixelCustomImage = renderBatteryImage(dark: true, items: pixelItems, configuration: pixelCustom)
+  try require(pixelImageContains(pixelPlainImage, (25, 133, 50))
+                && !pixelImageContains(pixelPlainImage, (0, 168, 120)),
+              "battery-color", "pixel-default-fill", "the default pixel fill is no longer the built-in green")
+  try require(pixelImageContains(pixelCustomImage, (0, 168, 120))
+                && !pixelImageContains(pixelCustomImage, (25, 133, 50)),
+              "battery-color", "pixel-custom-fill", "the custom green did not reach the pixel capsule")
+  try require(usageColor(forRemaining: 75).hex == "#348A45"
+                && usageColor(forRemaining: 35).hex == "#FFB340"
+                && usageColor(forRemaining: 15).hex == "#FF6961",
+              "battery-color", "gauge-default", "the default dropdown gauge colors changed")
+  try require(usageColor(forRemaining: 75, custom: "#00A878").hex == "#00A878"
+                && usageColor(forRemaining: 35, custom: "#00A878").hex == "#FFB340"
+                && usageColor(forRemaining: 15, custom: "#00A878").hex == "#FF6961",
+              "battery-color", "gauge-custom",
+              "the dropdown gauge ignored the custom green or leaked it into a warning band")
+  try require(usageColor(forRemaining: 75, custom: "bogus").hex == "#348A45",
+              "battery-color", "gauge-malformed", "a malformed custom color was not ignored")
+  try require(BATTERY_GREEN_PRESETS.count == 5
+                && BATTERY_GREEN_PRESETS.allSatisfy { rgbFromHex($0) != nil },
+              "battery-color", "presets-parse", "a preset swatch is not a valid hex color")
+  // Every preset must sit inside the green hue window the custom sheet also enforces.
+  try require(BATTERY_GREEN_PRESETS.allSatisfy { hex in
+                guard let rgb = rgbFromHex(hex) else { return false }
+                let hue = NSColor(calibratedRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
+                                  blue: CGFloat(rgb.b) / 255, alpha: 1).hueComponent
+                return hue >= BATTERY_GREEN_HUE_MIN && hue <= BATTERY_GREEN_HUE_MAX
+              },
+              "battery-color", "presets-in-gamut", "a preset swatch falls outside the green hue range")
+  // HSB round-trip must land back on the same hex for every preset.
+  try require(BATTERY_GREEN_PRESETS.allSatisfy { hex in
+                guard let hsb = hsbFromHex(hex) else { return false }
+                return hexFromHSB(hue: hsb.hue, saturation: hsb.saturation,
+                                  brightness: hsb.brightness) == hex
+              },
+              "battery-color", "hsb-roundtrip", "an HSB round-trip changed a preset color")
+  // Anything the sheet can produce stays inside the green window.
+  try require([BATTERY_GREEN_HUE_MIN, (BATTERY_GREEN_HUE_MIN + BATTERY_GREEN_HUE_MAX) / 2, BATTERY_GREEN_HUE_MAX]
+                .allSatisfy { hue in
+                  guard let rgb = rgbFromHex(hexFromHSB(hue: hue, saturation: 1.0, brightness: 0.95)) else { return false }
+                  return rgb.g > rgb.r && rgb.g > rgb.b
+                },
+              "battery-color", "sheet-gamut", "the hue window let through a non-green color")
+  try require(hsbFromHex("nope") == nil,
+              "battery-color", "hsb-reject", "hsbFromHex accepted a malformed color")
+  try require(pixelOnlyControlsEnabled("pixel") && !pixelOnlyControlsEnabled("modern"),
+              "battery-color", "pixel-only-controls",
+              "battery size and cat availability no longer tracks the display mode")
+  // Every settings-window string must exist in all six languages — a missing key silently
+  // falls back to English and produces a half-translated window.
+  // "General" (es) and "Claude Fable" (all languages) are spelled the same as the English
+  // source, so this scan can't tell a real translation from a fallback. Both are verified
+  // by hand and deliberately excluded.
+  let settingsStrings = [
+    "Configure how Claude and Codex usage appears on this Mac.",
+    "Display", "Appearance", "Choose the visual style and optional companion shown in the menu bar.",
+    "Limits", "Integration", "Integrations",
+    "Optional tools add cost breakdowns and provide quick access to the project.",
+    "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
+    "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
+    "Battery color", "Custom…", "Settings",
+    "Hue", "Saturation", "Brightness", "Preview", "Done",
+    "Default — follows light and dark", "Battery size and Cat apply to pixel batteries only.",
+    "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
+  ]
+  let missingTranslations = settingsStrings.flatMap { key in
+    SUPPORTED_LANGS.filter { $0 != "en" && tr(key, language: $0) == key }.map { "\(key)/\($0)" }
+  }
+  try require(missingTranslations.isEmpty,
+              "battery-color", "settings-i18n", "untranslated settings strings: \(missingTranslations.joined(separator: ", "))")
+  try require(restoredTabIndex(2, count: 5) == 2 && restoredTabIndex(NSNotFound, count: 5) == 0
+                && restoredTabIndex(7, count: 5) == 0 && restoredTabIndex(-1, count: 5) == 0,
+              "battery-color", "tab-restore", "settings tab restoration no longer clamps out-of-range indices")
+  print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
 }

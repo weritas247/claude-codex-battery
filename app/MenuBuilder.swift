@@ -32,7 +32,8 @@ private func row(_ menu: NSMenu, _ text: String, mono: Bool = false, size: CGFlo
 }
 
 private func gaugeRow(_ menu: NSMenu, _ label: String, remaining: Double, resetText: String?,
-                      usageURL: String, usageTitle: String, target: AppDelegate, language: String) {
+                      usageURL: String, usageTitle: String, target: AppDelegate, language: String,
+                      batteryGreen: String?) {
   let value = normalizedRemaining(remaining)
   let remainingText = trf("%d%% remaining", language: language, Int(value.rounded()))
   var semanticTitle = "\(label) \(remainingText)"
@@ -42,7 +43,7 @@ private func gaugeRow(_ menu: NSMenu, _ label: String, remaining: Double, resetT
     text += "  ·  \(resetText)"
   }
   text += "  ↗"
-  let item = row(menu, text, mono: true, color: usageColor(forRemaining: value).hex,
+  let item = row(menu, text, mono: true, color: usageColor(forRemaining: value, custom: batteryGreen).hex,
                  action: #selector(AppDelegate.openLink(_:)), target: target, repr: usageURL)
   item.toolTip = usageTitle
   item.setAccessibilityLabel(semanticTitle)
@@ -56,7 +57,7 @@ private func resetText(_ resetsAt: Int?, now: Int, language: String) -> String? 
 }
 
 func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
-               assets: ProviderAssetContext = .production(), language: String = UI_LANG) -> NSMenu {
+               assets: ProviderAssetContext = .production(), language: String = UI_LANG, batteryGreen: String? = nil) -> NSMenu {
   let menu = NSMenu()
   let now = snap.now
   let hasClaude = snap.usage != nil || snap.block != nil
@@ -82,7 +83,7 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
         let remaining = normalizedRemaining(fromUsed: window.pct)
         gaugeRow(menu, labels.five, remaining: remaining,
                  resetText: resetText(window.resetsAt, now: now, language: language),
-                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language)
+                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
         if let reset = window.resetsAt, reset > now,
            hasLowRemainingResetDistantRisk(remaining: remaining, resetSeconds: Double(reset - now)) {
           row(menu, "⚠ " + trf("5h remaining is low and reset is still %@ away",
@@ -92,12 +93,12 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
       if let window = usage.weekly {
         gaugeRow(menu, labels.week, remaining: normalizedRemaining(fromUsed: window.pct),
                  resetText: resetText(window.resetsAt, now: now, language: language),
-                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language)
+                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
       }
       if let window = usage.fable {
         gaugeRow(menu, window.model, remaining: normalizedRemaining(fromUsed: window.pct),
                  resetText: resetText(window.resetsAt, now: now, language: language),
-                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language)
+                 usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
       }
       let freshness = usage.live
         ? tr("live · updated just now", language: language)
@@ -158,11 +159,11 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
     }
     if let primary {
       gaugeRow(menu, labels.five, remaining: normalizedRemaining(fromUsed: primary.pct), resetText: codexReset(primary),
-               usageURL: CODEX_USAGE_URL, usageTitle: usageTitle, target: target, language: language)
+               usageURL: CODEX_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
     }
     if let secondary {
       gaugeRow(menu, labels.week, remaining: normalizedRemaining(fromUsed: secondary.pct), resetText: codexReset(secondary),
-               usageURL: CODEX_USAGE_URL, usageTitle: usageTitle, target: target, language: language)
+               usageURL: CODEX_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
     }
     let freshness = codex.live
       ? tr("live · updated just now", language: language)
