@@ -246,6 +246,12 @@ enum RefreshTrigger: Equatable {
 // The modern renderer reads neither batterySize nor catStyle, so those controls only apply to pixel mode.
 func pixelOnlyControlsEnabled(_ displayMode: String) -> Bool { displayMode == "pixel" }
 
+// AppKit returns NSNotFound when no tab is selected, and a rebuilt tab view may have fewer items.
+func restoredTabIndex(_ index: Int, count: Int) -> Int {
+  guard index != NSNotFound, index >= 0, index < count else { return 0 }
+  return index
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var statusItem: NSStatusItem?
   var timer: Timer?
@@ -262,6 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var catIdx = 0
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
+  var settingsTabView: NSTabView?
   var settingsColorSwatches: [NSButton] = []
   var settingsSizePopup: NSPopUpButton?
   var settingsCatPopup: NSPopUpButton?
@@ -887,6 +894,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       try? code.write(toFile: LANG_FILE, atomically: true, encoding: .utf8)
     }
     UI_LANG = resolveLang()
+    rebuildSettingsWindowForLanguage()
     rerender()
   }
 
@@ -911,7 +919,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.title = tr("Settings")
     window.isReleasedWhenClosed = false
     window.delegate = self
-    let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
+    installSettingsContent(in: window, selectedTab: 0)
+    settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+  }
+
+  // rerender() only rebuilds the menu and the status image, so an open settings window would
+  // keep the old language — the one surface the user is looking at when they change it.
+  func rebuildSettingsWindowForLanguage() {
+    guard let window = settingsWindow else { return }
+    var rawIndex = NSNotFound
+    if let tabs = settingsTabView, let selected = tabs.selectedTabViewItem {
+      rawIndex = tabs.indexOfTabViewItem(selected)
+    }
+    let index = restoredTabIndex(rawIndex, count: settingsTabView?.numberOfTabViewItems ?? 0)
+    window.title = tr("Settings")
+    installSettingsContent(in: window, selectedTab: index)
+  }
+
+  private func installSettingsContent(in window: NSWindow, selectedTab: Int) {
+    let tabs = buildSettingsTabs()
     let content = NSView(); content.addSubview(tabs); window.contentView = content
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
@@ -919,6 +945,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
       tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18)
     ])
+    if tabs.numberOfTabViewItems > 0 { tabs.selectTabViewItem(at: restoredTabIndex(selectedTab, count: tabs.numberOfTabViewItems)) }
+    settingsTabView = tabs
+  }
+
+  private func buildSettingsTabs() -> NSTabView {
+    let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
     func page(_ title: String, icon: String) -> (NSTabViewItem, NSStackView) {
       let view = NSView(); let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16; stack.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview(stack)
@@ -1001,7 +1033,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     heading(updates, tr("Updates")); note(updates, tr("The app checks for updates once a day. You can review the source and releases on GitHub.")); separator(updates)
     updates.addArrangedSubview(NSTextField(labelWithString: "Claude & Codex Usage Battery v\(APP_VERSION)")); updates.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings)))
 
-    settingsWindow = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    return tabs
   }
 
   func highlightColorSwatches(_ selected: String?) {
@@ -1100,7 +1132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   @objc func toggleMetric(_ sender: NSButton) { if let key = sender.identifier?.rawValue { UserDefaults.standard.set(sender.state == .on, forKey: key); rerender() } }
   @objc func openGitHubFromSettings() { NSWorkspace.shared.open(URL(string: REPO_URL)!) }
   @objc func closeSettings() { settingsWindow?.close() }
-  func windowWillClose(_ notification: Notification) { settingsWindow = nil }
+  func windowWillClose(_ notification: Notification) { settingsWindow = nil; settingsTabView = nil }
 
   @objc func toggleLoginItem() {
     guard #available(macOS 13.0, *) else { return }
@@ -2336,6 +2368,9 @@ private func runCoreSelfTest() throws {
   }
   try require(missingTranslations.isEmpty,
               "battery-color", "settings-i18n", "untranslated settings strings: \(missingTranslations.joined(separator: ", "))")
+  try require(restoredTabIndex(2, count: 5) == 2 && restoredTabIndex(NSNotFound, count: 5) == 0
+                && restoredTabIndex(7, count: 5) == 0 && restoredTabIndex(-1, count: 5) == 0,
+              "battery-color", "tab-restore", "settings tab restoration no longer clamps out-of-range indices")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
