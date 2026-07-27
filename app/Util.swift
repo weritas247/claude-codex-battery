@@ -72,7 +72,7 @@ struct UsageColor {
   var hex: String { String(format: "#%02X%02X%02X", r, g, b) }
 }
 
-// Single source of truth for both the menu-bar capsule and dropdown gauge.
+// Dropdown gauge colors. Menu bar capsule uses heatRemain in BatteryRenderer. Shares custom green; separate built-ins.
 func usageColor(forRemaining remaining: Double, custom: String? = nil) -> UsageColor {
   switch remainingBand(remaining) {
   case .red: return UsageColor(r: 255, g: 105, b: 97)
