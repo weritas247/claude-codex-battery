@@ -243,12 +243,15 @@ private final class Canvas {
 }
 
 // Actual macOS battery indicator colors (Apple HIG system colors)
-private func heatRemain(_ band: RemainingBand, dark: Bool) -> RGB {
+private func heatRemain(_ band: RemainingBand, dark: Bool, custom: String? = nil) -> RGB {
   switch band {
   case .red: return dark ? (255, 69, 58) : (255, 59, 48) // systemRed
   case .amber: return dark ? (255, 214, 10) : (255, 204, 0) // systemYellow
-  // Dark menu bar draws the value in white, so the fill goes deeper for contrast; light keeps it bright
-  case .green: return dark ? (25, 133, 50) : (42, 176, 70) // vivid green
+  case .green:
+    // One picked color covers both appearances — the user chose it explicitly, so honor it as-is
+    if let custom, let rgb = rgbFromHex(custom) { return rgb }
+    // Dark menu bar draws the value in white, so the fill goes deeper for contrast; light keeps it bright
+    return dark ? (25, 133, 50) : (42, 176, 70) // vivid green
   }
 }
 
@@ -279,8 +282,8 @@ func hatchOriginY(buttonHeight: CGFloat, imageHeight: CGFloat) -> CGFloat {
 }
 
 // Hatch color = the remaining color, darkened. Keeps the same contrast on green, amber and red.
-func activityHatchRGB(_ remain: Double?, dark: Bool) -> (UInt8, UInt8, UInt8) {
-  let base = heatRemain(remainingBand(normalizedRemaining(remain ?? 0)), dark: dark)
+func activityHatchRGB(_ remain: Double?, dark: Bool, custom: String? = nil) -> (UInt8, UInt8, UInt8) {
+  let base = heatRemain(remainingBand(normalizedRemaining(remain ?? 0)), dark: dark, custom: custom)
   let scale = 0.35
   return (UInt8((Double(base.r) * scale).rounded()),
           UInt8((Double(base.g) * scale).rounded()),
@@ -389,7 +392,8 @@ private func numW(_ p: Preset, _ s: String) -> Int { s.reduce(0) { $0 + p.adv($1
 // One capsule: border + remaining-fill + remaining number inside (100 included, always shown)
 // 100% is two-tone gold; when glintX is set, a diagonal glint sweep passes over the gold capsule
 private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
-                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?) {
+                         _ remain: Double?, _ ink: RGB, _ dark: Bool, _ glintX: Int?,
+                         _ customGreen: String?) {
   let by = midY - p.bh / 2
   cv.stroke(x, by, p.bw, p.bh, ink)
   cv.rect(x + p.bw, by + 3, 2, p.bh - 6, ink) // terminal
@@ -404,7 +408,7 @@ private func drawCapsule(_ cv: Canvas, _ p: Preset, _ x: Int, _ midY: Int,
       cv.rect(x + 2, by + 2, fw, p.bh - 4, goldBase(dark))
       cv.rect(x + 2, by + 2, fw, 2, goldHi(dark)) // top highlight
     } else {
-      cv.rect(x + 2, by + 2, fw, p.bh - 4, heatRemain(band, dark: dark))
+      cv.rect(x + 2, by + 2, fw, p.bh - 4, heatRemain(band, dark: dark, custom: customGreen))
     }
   }
   if golden, let g = glintX {
@@ -445,6 +449,7 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
                         cat: CatState? = nil, catFrameIndex: Int = 0,
                         configuration: PresentationConfiguration = .production) -> NSImage? {
   let p = configuration.batterySize() == "small" ? PRESET_SMALL : PRESET_BIG
+  let customGreen = configuration.batteryGreen()
   let ink: RGB = dark ? (235, 235, 235) : (45, 45, 45)
   let catStyle = configuration.catStyle()
   let catSpan = (cat != nil && catStyle != .none) ? CAT_W + 3 : 0
@@ -476,7 +481,7 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
       x += numW(p, String(g)) + p.lblgap
       pg = g
     } else { x += p.gap }
-    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX)
+    drawCapsule(cv, p, x, midY, item.remain, ink, dark, glintX, customGreen)
     x += p.capw
   }
   guard let provider = CGDataProvider(data: Data(cv.buf) as CFData),
@@ -492,7 +497,8 @@ func renderBatteryImage(dark: Bool, items: [BattItem], glintX: Int? = nil,
 
 // Provider-first menu bar layout: one compact battery per provider, with detailed windows in the menu.
 func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
-                              assetContext: ProviderAssetContext = .production()) -> NSImage? {
+                              assetContext: ProviderAssetContext = .production(),
+                              configuration: PresentationConfiguration = .production) -> NSImage? {
   guard !summaries.isEmpty else { return nil }
   let iconWidth = MODERN_ICON_WIDTH, iconGap = MODERN_ICON_GAP
   let bodyW = MODERN_BODY_WIDTH, bodyH = MODERN_BODY_HEIGHT, itemGap = MODERN_ITEM_GAP
@@ -501,6 +507,7 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
                                                + CGFloat(summaries.count - 1) * itemGap),
                                    height: MODERN_IMAGE_HEIGHT))
   image.lockFocus()
+  let customGreen = configuration.batteryGreen()
   let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
   var x: CGFloat = MODERN_IMAGE_PAD
   for (index, summary) in summaries.enumerated() {
@@ -513,7 +520,7 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
     let value = normalizedRemaining(summary.remain)
     let band = remainingBand(value)
     let fill = NSRect(x: bodyX + 2, y: 5, width: max(0, (bodyW - 4) * value / 100), height: bodyH - 4)
-    let c = heatRemain(band, dark: dark)
+    let c = heatRemain(band, dark: dark, custom: customGreen)
     NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1).setFill()
     NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
     if let icon = providerAsset(summary.provider, context: assetContext) {

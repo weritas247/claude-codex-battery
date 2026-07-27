@@ -468,7 +468,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let wide = fillW >= HATCH_MIN_FILL_PT
       let rect = CGRect(x: bodyX + 2, y: originY + 5,
                         width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
-      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark) : emptyHatchRGB(dark: dark)
+      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark,
+                                             custom: presentationConfiguration.batteryGreen())
+                          : emptyHatchRGB(dark: dark)
       let alpha: CGFloat = wide ? 0.85 : 0.55
       // Rebuild key = exactly what the stripe tile is baked from. Everything else about a refresh —
       // a narrower fill, a new percentage — is a resize we can apply in place, and must: rebuilding
@@ -738,7 +740,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state = catState(snapshot, configuration: presentationConfiguration)
     let modern = presentationConfiguration.displayMode() == "modern"
     let image = modern
-      ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets)
+      ? renderModernSummaryImage(dark: dark, summaries: summaries, assetContext: assets,
+                                 configuration: presentationConfiguration)
       : renderBatteryImage(dark: dark, items: items, cat: state, catFrameIndex: catIdx,
                            configuration: presentationConfiguration)
     let hasDisplayData = modern ? !summaries.isEmpty : !items.isEmpty
@@ -2070,6 +2073,76 @@ private func runCoreSelfTest() throws {
                 && validatedBatteryGreen("not-a-color") == nil
                 && validatedBatteryGreen(nil) == nil,
               "battery-color", "validate", "a malformed saved color was not rejected")
+  // Green band takes the custom color; amber and red keep the system warning colors.
+  let customHatchGreen = activityHatchRGB(75, dark: true, custom: "#00A878")
+  let customHatchAmber = activityHatchRGB(35, dark: true, custom: "#00A878")
+  let customHatchRed = activityHatchRGB(15, dark: true, custom: "#00A878")
+  try require(customHatchGreen == (0, 59, 42),
+              "battery-color", "custom-green-band", "the custom green did not reach the green band")
+  try require(customHatchAmber == (89, 75, 4) && customHatchRed == (89, 24, 20),
+              "battery-color", "warning-bands-untouched",
+              "a custom green leaked into the amber or red band")
+  try require(activityHatchRGB(75, dark: true) == (9, 47, 18)
+                && activityHatchRGB(75, dark: false) == (15, 62, 25),
+              "battery-color", "default-unchanged",
+              "the built-in green changed when no custom color is set")
+  // Wiring check: the same summaries must render differently once a custom green is injected,
+  // and identically when only the warning bands are on screen.
+  let greenSummaries = [ProviderSummary(provider: .claude, remain: 75)]
+  let redSummaries = [ProviderSummary(provider: .claude, remain: 15)]
+  let plainConfig = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let customConfig = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, batteryGreen: { "#00A878" })
+  func modernBytes(_ summaries: [ProviderSummary], _ configuration: PresentationConfiguration) -> Data? {
+    guard let image = renderModernSummaryImage(dark: true, summaries: summaries,
+                                               assetContext: conversionAssets,
+                                               configuration: configuration),
+          let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let data = cg.dataProvider?.data else { return nil }
+    return data as Data
+  }
+  try require(modernBytes(greenSummaries, plainConfig) != nil
+                && modernBytes(greenSummaries, plainConfig) != modernBytes(greenSummaries, customConfig),
+              "battery-color", "modern-wiring",
+              "renderModernSummaryImage ignored the injected custom green")
+  try require(modernBytes(redSummaries, plainConfig) == modernBytes(redSummaries, customConfig),
+              "battery-color", "modern-red-identical",
+              "a custom green changed the red band in the modern renderer")
+  // Pixel mode writes exact bytes into its canvas, so the fill color can be scanned for directly.
+  func pixelImageContains(_ image: NSImage?, _ rgb: (UInt8, UInt8, UInt8)) -> Bool {
+    guard let image, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let data = cg.dataProvider?.data else { return false }
+    let length = CFDataGetLength(data)
+    guard let ptr = CFDataGetBytePtr(data) else { return false }
+    var offset = 0
+    while offset + 3 < length {
+      if ptr[offset] == rgb.0, ptr[offset + 1] == rgb.1, ptr[offset + 2] == rgb.2 { return true }
+      offset += 4
+    }
+    return false
+  }
+  let pixelPlain = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" })
+  let pixelCustom = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "pixel" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, batteryGreen: { "#00A878" })
+  let pixelItems = battItems(snapshot, configuration: pixelPlain)
+  let pixelPlainImage = renderBatteryImage(dark: true, items: pixelItems, configuration: pixelPlain)
+  let pixelCustomImage = renderBatteryImage(dark: true, items: pixelItems, configuration: pixelCustom)
+  try require(pixelImageContains(pixelPlainImage, (25, 133, 50))
+                && !pixelImageContains(pixelPlainImage, (0, 168, 120)),
+              "battery-color", "pixel-default-fill", "the default pixel fill is no longer the built-in green")
+  try require(pixelImageContains(pixelCustomImage, (0, 168, 120))
+                && !pixelImageContains(pixelCustomImage, (25, 133, 50)),
+              "battery-color", "pixel-custom-fill", "the custom green did not reach the pixel capsule")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
