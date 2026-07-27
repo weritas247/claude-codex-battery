@@ -2316,6 +2316,25 @@ private func runCoreSelfTest() throws {
   try require(pixelOnlyControlsEnabled("pixel") && !pixelOnlyControlsEnabled("modern"),
               "battery-color", "pixel-only-controls",
               "battery size and cat availability no longer tracks the display mode")
+  // Every settings-window string must exist in all six languages — a missing key silently
+  // falls back to English and produces a half-translated window.
+  // "General" (es) and "Claude Fable" (all languages) are spelled the same as the English
+  // source, so this scan can't tell a real translation from a fallback. Both are verified
+  // by hand and deliberately excluded.
+  let settingsStrings = [
+    "Configure how Claude and Codex usage appears on this Mac.",
+    "Display", "Appearance", "Choose the visual style and optional companion shown in the menu bar.",
+    "Limits", "Integration", "Integrations",
+    "Optional tools add cost breakdowns and provide quick access to the project.",
+    "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
+    "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
+    "Battery color", "Custom…", "Settings",
+  ]
+  let missingTranslations = settingsStrings.flatMap { key in
+    SUPPORTED_LANGS.filter { $0 != "en" && tr(key, language: $0) == key }.map { "\(key)/\($0)" }
+  }
+  try require(missingTranslations.isEmpty,
+              "battery-color", "settings-i18n", "untranslated settings strings: \(missingTranslations.joined(separator: ", "))")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
