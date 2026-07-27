@@ -82,12 +82,8 @@ func usageColor(forRemaining remaining: Double) -> UsageColor {
 }
 
 func hexColor(_ s: String) -> NSColor? {
-  var h = s
-  guard h.hasPrefix("#") else { return nil }
-  h.removeFirst()
-  guard h.count == 6, let v = Int(h, radix: 16) else { return nil }
-  return NSColor(red: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
-                 blue: CGFloat(v & 0xff) / 255, alpha: 1)
+  guard let rgb = rgbFromHex(s) else { return nil }
+  return NSColor(red: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: 1)
 }
 
 // Hex → raw RGB bytes. Deliberately not routed through hexColor(): that builds an sRGB NSColor
