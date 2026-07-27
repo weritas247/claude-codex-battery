@@ -205,6 +205,21 @@ let BATTERY_GREEN_HUE_MAX: CGFloat = 170.0 / 360.0
 // ahead of these, which clears the key and restores the built-in dark/light pair.
 let BATTERY_GREEN_PRESETS = ["#0F5132", "#198532", "#34C759", "#00A878", "#6FBF4A"]
 
+// HSB <-> hex helpers for the custom color sheet. Hue is bounded by the caller
+// (BATTERY_GREEN_HUE_MIN/MAX), so these two are otherwise unconstrained conversions.
+func hexFromHSB(hue: CGFloat, saturation: CGFloat, brightness: CGFloat) -> String {
+  let c = NSColor(calibratedHue: hue, saturation: saturation, brightness: brightness, alpha: 1)
+  return String(format: "#%02X%02X%02X", Int((c.redComponent * 255).rounded()),
+                Int((c.greenComponent * 255).rounded()), Int((c.blueComponent * 255).rounded()))
+}
+
+func hsbFromHex(_ hex: String) -> (hue: CGFloat, saturation: CGFloat, brightness: CGFloat)? {
+  guard let rgb = rgbFromHex(hex) else { return nil }
+  let c = NSColor(calibratedRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
+                  blue: CGFloat(rgb.b) / 255, alpha: 1)
+  return (c.hueComponent, c.saturationComponent, c.brightnessComponent)
+}
+
 private typealias RGB = (r: UInt8, g: UInt8, b: UInt8)
 
 // Logical pixel canvas (SCALE=2 — draws at 2x pixels for Retina)

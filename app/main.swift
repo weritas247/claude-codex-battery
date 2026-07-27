@@ -260,6 +260,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
   var settingsColorSwatches: [NSButton] = []
+  var colorSheet: NSWindow?
+  var colorSheetPreview: NSView?
+  var colorSheetSliders: (hue: NSSlider, saturation: NSSlider, brightness: NSSlider)?
 
   let presentationConfiguration: PresentationConfiguration
   private let collector: SnapshotCollector
@@ -1002,9 +1005,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     else { UserDefaults.standard.set(id, forKey: BATTERY_GREEN_KEY) }
     highlightColorSwatches(currentBatteryGreen()); rerender()
   }
-  // Placeholder for the upcoming custom-color sheet (sliders + preview). Task 5 replaces this body;
-  // this stub only exists so the "Custom…" button's #selector reference compiles in the meantime.
-  @objc func showBatteryColorSheet() {}
+  @objc func showBatteryColorSheet() {
+    guard let parent = settingsWindow else { return }
+    let start = hsbFromHex(currentBatteryGreen() ?? "#198532") ?? (hue: 0.35, saturation: 0.8, brightness: 0.55)
+    let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 260),
+                         styleMask: [.titled], backing: .buffered, defer: false)
+    sheet.title = tr("Battery color")
+    func slider(_ min: Double, _ max: Double, _ value: Double) -> NSSlider {
+      let s = NSSlider(value: value, minValue: min, maxValue: max, target: self,
+                       action: #selector(colorSheetSliderChanged))
+      s.translatesAutoresizingMaskIntoConstraints = false
+      s.widthAnchor.constraint(equalToConstant: 240).isActive = true
+      return s
+    }
+    let hue = slider(Double(BATTERY_GREEN_HUE_MIN), Double(BATTERY_GREEN_HUE_MAX), Double(start.hue))
+    let sat = slider(0.35, 1.0, Double(max(0.35, min(1.0, start.saturation))))
+    let bri = slider(0.25, 0.95, Double(max(0.25, min(0.95, start.brightness))))
+    colorSheetSliders = (hue, sat, bri)
+    let preview = NSView(); preview.wantsLayer = true; preview.translatesAutoresizingMaskIntoConstraints = false
+    preview.layer?.cornerRadius = 6
+    preview.widthAnchor.constraint(equalToConstant: 90).isActive = true
+    preview.heightAnchor.constraint(equalToConstant: 34).isActive = true
+    colorSheetPreview = preview
+    let grid = NSGridView(views: [
+      [NSTextField(labelWithString: tr("Hue")), hue],
+      [NSTextField(labelWithString: tr("Saturation")), sat],
+      [NSTextField(labelWithString: tr("Brightness")), bri],
+      [NSTextField(labelWithString: tr("Preview")), preview],
+    ])
+    grid.rowSpacing = 14; grid.columnSpacing = 18; grid.translatesAutoresizingMaskIntoConstraints = false
+    let done = NSButton(title: tr("Done"), target: self, action: #selector(closeBatteryColorSheet))
+    done.keyEquivalent = "\r"; done.translatesAutoresizingMaskIntoConstraints = false
+    let content = NSView(); content.addSubview(grid); content.addSubview(done); sheet.contentView = content
+    NSLayoutConstraint.activate([
+      grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+      grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+      done.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+      done.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+    ])
+    colorSheet = sheet
+    colorSheetSliderChanged() // seed the preview and persist the starting color
+    parent.beginSheet(sheet, completionHandler: nil)
+  }
+
+  @objc func colorSheetSliderChanged() {
+    guard let s = colorSheetSliders else { return }
+    let hex = hexFromHSB(hue: CGFloat(s.hue.doubleValue), saturation: CGFloat(s.saturation.doubleValue),
+                         brightness: CGFloat(s.brightness.doubleValue))
+    colorSheetPreview?.layer?.backgroundColor = hexColor(hex)?.cgColor
+    UserDefaults.standard.set(hex, forKey: BATTERY_GREEN_KEY)
+    highlightColorSwatches(currentBatteryGreen()); rerender()
+  }
+
+  @objc func closeBatteryColorSheet() {
+    guard let sheet = colorSheet else { return }
+    settingsWindow?.endSheet(sheet); colorSheet = nil
+    colorSheetSliders = nil; colorSheetPreview = nil
+  }
   @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); rerender() }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
@@ -2209,6 +2266,22 @@ private func runCoreSelfTest() throws {
                 return hue >= BATTERY_GREEN_HUE_MIN && hue <= BATTERY_GREEN_HUE_MAX
               },
               "battery-color", "presets-in-gamut", "a preset swatch falls outside the green hue range")
+  // HSB round-trip must land back on the same hex for every preset.
+  try require(BATTERY_GREEN_PRESETS.allSatisfy { hex in
+                guard let hsb = hsbFromHex(hex) else { return false }
+                return hexFromHSB(hue: hsb.hue, saturation: hsb.saturation,
+                                  brightness: hsb.brightness) == hex
+              },
+              "battery-color", "hsb-roundtrip", "an HSB round-trip changed a preset color")
+  // Anything the sheet can produce stays inside the green window.
+  try require([BATTERY_GREEN_HUE_MIN, (BATTERY_GREEN_HUE_MIN + BATTERY_GREEN_HUE_MAX) / 2, BATTERY_GREEN_HUE_MAX]
+                .allSatisfy { hue in
+                  guard let rgb = rgbFromHex(hexFromHSB(hue: hue, saturation: 1.0, brightness: 0.95)) else { return false }
+                  return rgb.g > rgb.r && rgb.g > rgb.b
+                },
+              "battery-color", "sheet-gamut", "the hue window let through a non-green color")
+  try require(hsbFromHex("nope") == nil,
+              "battery-color", "hsb-reject", "hsbFromHex accepted a malformed color")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")

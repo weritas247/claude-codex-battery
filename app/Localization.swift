@@ -121,6 +121,11 @@ private let TR: [String: [String: String]] = [
   "Cat": ["ko": "고양이", "ja": "ネコ", "zh-Hans": "猫", "zh-Hant": "貓", "es": "Gato"],
   "Battery color": ["ko": "배터리 색상", "ja": "バッテリーの色", "zh-Hans": "电池颜色", "zh-Hant": "電池顏色", "es": "Color de la batería"],
   "Custom…": ["ko": "사용자 지정…", "ja": "カスタム…", "zh-Hans": "自定…", "zh-Hant": "自訂…", "es": "Personalizado…"],
+  "Hue": ["ko": "색조", "ja": "色相", "zh-Hans": "色相", "zh-Hant": "色相", "es": "Tono"],
+  "Saturation": ["ko": "채도", "ja": "彩度", "zh-Hans": "饱和度", "zh-Hant": "飽和度", "es": "Saturación"],
+  "Brightness": ["ko": "밝기", "ja": "明るさ", "zh-Hans": "亮度", "zh-Hant": "亮度", "es": "Brillo"],
+  "Preview": ["ko": "미리보기", "ja": "プレビュー", "zh-Hans": "预览", "zh-Hant": "預覽", "es": "Vista previa"],
+  "Done": ["ko": "완료", "ja": "完了", "zh-Hans": "完成", "zh-Hant": "完成", "es": "Listo"],
   "Default — follows light and dark": [
     "ko": "기본 — 다크/라이트에 맞춰 자동", "ja": "デフォルト — ライト/ダークに追従",
     "zh-Hans": "默认 — 跟随浅色/深色", "zh-Hant": "預設 — 跟隨淺色/深色",
