@@ -243,6 +243,9 @@ enum RefreshTrigger: Equatable {
   case manual
 }
 
+// The modern renderer reads neither batterySize nor catStyle, so those controls only apply to pixel mode.
+func pixelOnlyControlsEnabled(_ displayMode: String) -> Bool { displayMode == "pixel" }
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var statusItem: NSStatusItem?
   var timer: Timer?
@@ -260,6 +263,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private(set) var lastSnap: Snapshot?
   var settingsWindow: NSWindow?
   var settingsColorSwatches: [NSButton] = []
+  var settingsSizePopup: NSPopUpButton?
+  var settingsCatPopup: NSPopUpButton?
+  var settingsPixelOnlyNote: NSTextField?
   var colorSheet: NSWindow?
   var colorSheetPreview: NSView?
   var colorSheetSliders: (hue: NSSlider, saturation: NSSlider, brightness: NSSlider)?
@@ -961,12 +967,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     let (_, display) = page(tr("Display"), icon: "paintbrush")
     heading(display, tr("Appearance")); note(display, tr("Choose the visual style and optional companion shown in the menu bar.")); separator(display)
+    let sizePopup = popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))
+    let catPopup = popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))
+    settingsSizePopup = sizePopup; settingsCatPopup = catPopup
     let appearance = NSGridView(views: [
       [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
-      [NSTextField(labelWithString: tr("Battery size")), popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))],
-      [NSTextField(labelWithString: tr("Cat")), popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))],
+      [NSTextField(labelWithString: tr("Battery size")), sizePopup],
+      [NSTextField(labelWithString: tr("Cat")), catPopup],
       [NSTextField(labelWithString: tr("Battery color")), colorRow()],
     ]); appearance.rowSpacing = 14; appearance.columnSpacing = 24; display.addArrangedSubview(appearance)
+    let pixelNote = NSTextField(wrappingLabelWithString: tr("Battery size and Cat apply to pixel batteries only."))
+    pixelNote.textColor = .secondaryLabelColor; pixelNote.font = .systemFont(ofSize: 12); pixelNote.maximumNumberOfLines = 2
+    settingsPixelOnlyNote = pixelNote; display.addArrangedSubview(pixelNote)
+    applyPixelOnlyAvailability()
 
     let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
     heading(limits, tr("Menu bar items")); note(limits, tr("Select the limits shown in the compact menu bar indicator. Detailed usage remains available in the dropdown.")); separator(limits)
@@ -1074,7 +1087,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     settingsWindow?.endSheet(sheet); colorSheet = nil
     colorSheetSliders = nil; colorSheetPreview = nil
   }
-  @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); rerender() }
+  func applyPixelOnlyAvailability() {
+    let pixel = pixelOnlyControlsEnabled(currentDisplayMode())
+    settingsSizePopup?.isEnabled = pixel
+    settingsCatPopup?.isEnabled = pixel
+    settingsPixelOnlyNote?.isHidden = pixel
+  }
+  @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); applyPixelOnlyAvailability(); rerender() }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
   @objc func settingsLanguageChanged(_ sender: NSPopUpButton) { let codes = ["auto"] + LANG_DISPLAY.map { $0.code }; let item = NSMenuItem(); item.representedObject = codes[sender.indexOfSelectedItem]; setLang(item) }
@@ -2294,6 +2313,9 @@ private func runCoreSelfTest() throws {
               "battery-color", "sheet-gamut", "the hue window let through a non-green color")
   try require(hsbFromHex("nope") == nil,
               "battery-color", "hsb-reject", "hsbFromHex accepted a malformed color")
+  try require(pixelOnlyControlsEnabled("pixel") && !pixelOnlyControlsEnabled("modern"),
+              "battery-color", "pixel-only-controls",
+              "battery size and cat availability no longer tracks the display mode")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")
