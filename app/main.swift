@@ -753,7 +753,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     let language = presentationConfiguration.language()
     let menu = buildMenu(snapshot, swiftBarDup: swiftBarDuplicate, target: self,
-                         assets: assets, language: language)
+                         assets: assets, language: language,
+                         batteryGreen: presentationConfiguration.batteryGreen())
     let accessibilitySummary = statusAccessibilitySummary(
       items: items, summaries: summaries, modern: modern, hasDisplayData: hasDisplayData,
       language: language)
@@ -2143,6 +2144,17 @@ private func runCoreSelfTest() throws {
   try require(pixelImageContains(pixelCustomImage, (0, 168, 120))
                 && !pixelImageContains(pixelCustomImage, (25, 133, 50)),
               "battery-color", "pixel-custom-fill", "the custom green did not reach the pixel capsule")
+  try require(usageColor(forRemaining: 75).hex == "#348A45"
+                && usageColor(forRemaining: 35).hex == "#FFB340"
+                && usageColor(forRemaining: 15).hex == "#FF6961",
+              "battery-color", "gauge-default", "the default dropdown gauge colors changed")
+  try require(usageColor(forRemaining: 75, custom: "#00A878").hex == "#00A878"
+                && usageColor(forRemaining: 35, custom: "#00A878").hex == "#FFB340"
+                && usageColor(forRemaining: 15, custom: "#00A878").hex == "#FF6961",
+              "battery-color", "gauge-custom",
+              "the dropdown gauge ignored the custom green or leaked it into a warning band")
+  try require(usageColor(forRemaining: 75, custom: "bogus").hex == "#348A45",
+              "battery-color", "gauge-malformed", "a malformed custom color was not ignored")
   print("self-test-core: battery-color PASS")
 
   print("self-test-core: PASS")

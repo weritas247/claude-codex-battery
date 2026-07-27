@@ -73,11 +73,13 @@ struct UsageColor {
 }
 
 // Single source of truth for both the menu-bar capsule and dropdown gauge.
-func usageColor(forRemaining remaining: Double) -> UsageColor {
+func usageColor(forRemaining remaining: Double, custom: String? = nil) -> UsageColor {
   switch remainingBand(remaining) {
   case .red: return UsageColor(r: 255, g: 105, b: 97)
   case .amber: return UsageColor(r: 255, g: 179, b: 64)
-  case .green: return UsageColor(r: 52, g: 138, b: 69)
+  case .green:
+    if let custom, let rgb = rgbFromHex(custom) { return UsageColor(r: rgb.r, g: rgb.g, b: rgb.b) }
+    return UsageColor(r: 52, g: 138, b: 69)
   }
 }
 
