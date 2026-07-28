@@ -80,3 +80,10 @@ func accountNames() -> AccountNames {
   AccountNames(claude: claudeAccountName().map(truncateAccount),
                codex: codexAccountName().map(truncateAccount))
 }
+
+// On by default. A setting with a non-false default can't be read through bool(forKey:) — a
+// missing key would come back false and flip the default. Takes the stored value as an argument
+// so it can be tested without touching UserDefaults.
+func accountNameVisible(_ stored: Any? = UserDefaults.standard.object(forKey: "showAccountName")) -> Bool {
+  (stored as? Bool) ?? true
+}

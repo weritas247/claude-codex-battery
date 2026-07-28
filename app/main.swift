@@ -23,7 +23,9 @@ func collectSnapshot() -> Snapshot {
                   block: getClaudeBlock(now: now),
                   models: getClaudeModels(),
                   codex: getCodex(now: now),
-                  update: getUpdateInfo(now: now))
+                  update: getUpdateInfo(now: now),
+                  // Off means the login files are never opened at all.
+                  accounts: accountNameVisible() ? accountNames() : .none)
 }
 
 // Snapshot → menu bar battery items (same logic as the widget JS's rendering code)
@@ -1012,6 +1014,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let pixelNote = NSTextField(wrappingLabelWithString: tr("Battery size and Cat apply to pixel batteries only."))
     pixelNote.textColor = .secondaryLabelColor; pixelNote.font = .systemFont(ofSize: 12); pixelNote.maximumNumberOfLines = 2
     settingsPixelOnlyNote = pixelNote; display.addArrangedSubview(pixelNote)
+    let accountToggle = NSButton(checkboxWithTitle: tr("Show account name"), target: self,
+                                 action: #selector(toggleMetric(_:)))
+    accountToggle.identifier = NSUserInterfaceItemIdentifier("showAccountName")
+    accountToggle.state = accountNameVisible() ? .on : .off
+    display.addArrangedSubview(accountToggle)
     applyPixelOnlyAvailability()
 
     let (_, limits) = page(tr("Limits"), icon: "slider.horizontal.3")
@@ -2361,7 +2368,7 @@ private func runCoreSelfTest() throws {
     "Optional tools add cost breakdowns and provide quick access to the project.",
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
     "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
-    "Battery color", "Custom…", "Settings",
+    "Battery color", "Custom…", "Settings", "Show account name",
     "Hue", "Saturation", "Brightness", "Preview", "Done",
     "Default — follows light and dark", "Battery size and Cat apply to pixel batteries only.",
     "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
@@ -2488,6 +2495,12 @@ private func runCoreSelfTest() throws {
   try require(Snapshot(now: now, usage: nil, block: nil, models: nil, codex: nil,
                        update: (nil, false)).accounts.claude == nil,
               "account", "snapshot-default", "the accounts default is not .none")
+  // The default is on. Reading with bool(forKey:) alone would make a missing key false and flip
+  // the default to off.
+  try require(accountNameVisible(nil) == true,
+              "account", "default-on", "the account name did not default to on with no stored setting")
+  try require(accountNameVisible(false) == false && accountNameVisible(true) == true,
+              "account", "toggle-respected", "a stored setting was ignored")
   print("self-test-core: account PASS")
 
   print("self-test-core: PASS")
