@@ -281,8 +281,10 @@ const now = Math.floor(Date.now() / 1000);
 // ── Auto-update (notification + one click) ──
 const VERSION = "2.5.2";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
-const REPO_RAW =
-  "https://raw.githubusercontent.com/dennykim123/claude-codex-battery/main";
+// Single source of truth for the repository this widget updates from — the raw URL and the footer
+// link both derive from it, so a fork only ever changes this one line.
+const REPO = "weritas247/claude-codex-battery";
+const REPO_RAW = `https://raw.githubusercontent.com/${REPO}/main`;
 const UPDATE_CACHE = `${HOME}/.claude/swiftbar/.update-check.json`;
 function cmpVer(a, b) {
   const pa = String(a).split(".").map(Number);
@@ -1179,7 +1181,7 @@ out.push(
   );
 }
 out.push(
-  `⭐ github.com/dennykim123/claude-codex-battery | href=https://github.com/dennykim123/claude-codex-battery size=11 color=#8b949e`,
+  `⭐ github.com/${REPO} | href=https://github.com/${REPO} size=11 color=#8b949e`,
 );
 // Disable the widget — SwiftBar's plugin-disable URL. Re-enable: SwiftBar menu → Plugins
 out.push(

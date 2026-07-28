@@ -2,7 +2,8 @@
 # Claude & Codex Usage Battery — self-update
 # Called from the widget dropdown's "🆕 Update". Downloads the latest script and replaces it in place.
 set -e
-RAW="https://raw.githubusercontent.com/dennykim123/claude-codex-battery/main"
+# Must match REPO in claude-codex-usage.2m.js — a standalone shell script can't import it.
+RAW="https://raw.githubusercontent.com/weritas247/claude-codex-battery/main"
 DEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$DEST_DIR/claude-codex-usage.2m.js"
 BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"

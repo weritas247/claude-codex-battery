@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/SwiftBar-plugin-FF9500" alt="SwiftBar plugin">
   <img src="https://img.shields.io/badge/runtime-bun-14151A?logo=bun&logoColor=white" alt="Runtime: bun">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="Zero dependencies">
-  <a href="https://github.com/dennykim123/claude-codex-battery/stargazers"><img src="https://img.shields.io/github/stars/dennykim123/claude-codex-battery?style=flat&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/weritas247/claude-codex-battery/stargazers"><img src="https://img.shields.io/github/stars/weritas247/claude-codex-battery?style=flat&logo=github" alt="GitHub stars"></a>
 </p>
 
 > A menu-bar and system-tray widget that shows your remaining **Claude Code** and **Codex** usage limits as battery icons — so you never have to open `/usage` again.
@@ -85,7 +85,7 @@ See the [Windows documentation](windows/README.md) for optional start-at-login, 
   <img src="docs/app-dropdown.png" alt="App dropdown" width="380">
 </p>
 
-Download `ClaudeCodexBattery-vX.Y.Z.dmg` from [**Releases**](https://github.com/dennykim123/claude-codex-battery/releases), open it, and drag `ClaudeCodexBattery.app` into **Applications**. That's it — the app is **signed & notarized**, so it runs with a double-click, and on first launch it offers to **start at login**. (A `.zip` is also published; it's what the in-app self-updater downloads.)
+Download `ClaudeCodexBattery-vX.Y.Z.dmg` from [**Releases**](https://github.com/weritas247/claude-codex-battery/releases), open it, and drag `ClaudeCodexBattery.app` into **Applications**. That's it — the app is **signed & notarized**, so it runs with a double-click, and on first launch it offers to **start at login**. (A `.zip` is also published; it's what the in-app self-updater downloads.)
 
 It's a native Swift port of the same widget: identical battery rendering, identical dropdown, same privacy model ([see Privacy](#privacy--security) — your tokens go only to the two usage endpoints). `ccusage` remains optional for the cost breakdown. Source lives in [`app/`](app/) — `./build.sh` for a local ad-hoc build, `./release.sh` for the notarized release.
 
@@ -96,7 +96,7 @@ It's a native Swift port of the same widget: identical battery rendering, identi
 ### Option 2 — SwiftBar plugin (single auditable script)
 
 ```bash
-git clone https://github.com/dennykim123/claude-codex-battery.git
+git clone https://github.com/weritas247/claude-codex-battery.git
 cd claude-codex-battery
 ./install.sh
 ```
