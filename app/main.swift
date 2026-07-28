@@ -2414,6 +2414,45 @@ private func runCoreSelfTest() throws {
   // Hangul is three bytes in UTF-8 — counting characters, not bytes, keeps it intact.
   try require(truncateAccount(String(repeating: "가", count: 25)) == String(repeating: "가", count: 20) + "…",
               "account", "truncate-multibyte", "a multi-byte name was not cut on character boundaries")
+
+  // File lookup — fixtures go in a temp directory so the real home directory stays untouched.
+  let acctDir = NSTemporaryDirectory() + "ccb-account-test-\(ProcessInfo.processInfo.processIdentifier)"
+  try? FileManager.default.createDirectory(atPath: acctDir, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(atPath: acctDir) }
+  func writeFixture(_ name: String, _ text: String) -> String {
+    let p = acctDir + "/" + name
+    try? Data(text.utf8).write(to: URL(fileURLWithPath: p))
+    return p
+  }
+
+  let claudeGood = writeFixture("claude-good.json",
+    "{\"numStartups\":3,\"oauthAccount\":{\"emailAddress\":\"dev.account@example.com\",\"displayName\":\"Dev Account\"}}")
+  try require(claudeAccountName(path: claudeGood) == "dev.account",
+              "account", "claude-read", "oauthAccount.emailAddress in ~/.claude.json was not read")
+
+  let codexToken = testJWT("{\"email\":\"abc@b.com\"}")
+  let codexGood = writeFixture("codex-good.json",
+    "{\"tokens\":{\"id_token\":\"\(codexToken)\",\"access_token\":\"SECRET\"}}")
+  try require(codexAccountName(path: codexGood) == "abc",
+              "account", "codex-read", "the email in the ~/.codex/auth.json id_token was not read")
+
+  // Every failure collapses to a quiet omission — nil, never a thrown error.
+  let claudeNoAccount = writeFixture("claude-no-account.json", "{\"numStartups\":3}")
+  let claudeBroken = writeFixture("claude-broken.json", "{not json")
+  let codexNoToken = writeFixture("codex-no-token.json", "{\"tokens\":{\"access_token\":\"SECRET\"}}")
+  try require(claudeAccountName(path: acctDir + "/missing.json") == nil
+                && claudeAccountName(path: claudeNoAccount) == nil
+                && claudeAccountName(path: claudeBroken) == nil
+                && codexAccountName(path: acctDir + "/missing.json") == nil
+                && codexAccountName(path: codexNoToken) == nil,
+              "account", "read-degrade", "a missing or corrupt file did not collapse to nil")
+
+  // The cache must be keyed per path — one file's result must not leak into another's.
+  let claudeOther = writeFixture("claude-other.json",
+    "{\"oauthAccount\":{\"emailAddress\":\"someone.else@corp.com\"}}")
+  try require(claudeAccountName(path: claudeOther) == "someone.else"
+                && claudeAccountName(path: claudeGood) == "dev.account",
+              "account", "cache-per-path", "the mtime cache ignored the path and returned another file's value")
   print("self-test-core: account PASS")
 
   print("self-test-core: PASS")

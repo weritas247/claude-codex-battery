@@ -36,3 +36,47 @@ func jwtEmail(_ idToken: String?) -> String? {
 func truncateAccount(_ name: String) -> String {
   name.count <= ACCOUNT_NAME_MAX ? name : String(name.prefix(ACCOUNT_NAME_MAX)) + "…"
 }
+
+struct AccountNames {
+  let claude: String?
+  let codex: String?
+  static let none = AccountNames(claude: nil, codex: nil)
+}
+
+// ~/.claude.json measures 239 KB in practice and is read on every refresh. Unchanged
+// (mtime, size) means no reparse. Entries are keyed by path so one file's result can't leak
+// into another's. Refreshes run on a background queue while the menu is assembled on the main
+// thread, hence the lock. The cache lives in process memory only — no reason to copy an account
+// name into a new file on disk.
+private final class AccountFileCache {
+  private var entries: [String: (mtime: Int, size: Int, value: String?)] = [:]
+  private let lock = NSLock()
+
+  func lookup(_ path: String, _ parse: (Any) -> String?) -> String? {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+    let mtime = Int(((attrs?[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0)
+    let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+    lock.lock()
+    defer { lock.unlock() }
+    if let hit = entries[path], hit.mtime == mtime, hit.size == size { return hit.value }
+    let value = readJSONFile(path).flatMap(parse)
+    entries[path] = (mtime, size, value)
+    return value
+  }
+}
+
+private let accountCache = AccountFileCache()
+
+func claudeAccountName(path: String = "\(HOME)/.claude.json") -> String? {
+  accountCache.lookup(path) { emailLocalPart(jstr(jd(jd($0)?["oauthAccount"])?["emailAddress"])) }
+}
+
+// access_token / refresh_token are never read — only the id_token payload.
+func codexAccountName(path: String = "\(HOME)/.codex/auth.json") -> String? {
+  accountCache.lookup(path) { emailLocalPart(jwtEmail(jstr(jd(jd($0)?["tokens"])?["id_token"]))) }
+}
+
+func accountNames() -> AccountNames {
+  AccountNames(claude: claudeAccountName().map(truncateAccount),
+               codex: codexAccountName().map(truncateAccount))
+}
