@@ -952,7 +952,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     settingsTabView = tabs
   }
 
-  private func buildSettingsTabs() -> NSTabView {
+  // fileprivate, not private, so --self-test-core can assert the tabs actually contain what the
+  // settings window promises.
+  fileprivate func buildSettingsTabs() -> NSTabView {
     let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder; tabs.translatesAutoresizingMaskIntoConstraints = false
     func page(_ title: String, icon: String) -> (NSTabViewItem, NSStackView) {
       let view = NSView(); let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16; stack.translatesAutoresizingMaskIntoConstraints = false
@@ -2501,7 +2503,36 @@ private func runCoreSelfTest() throws {
               "account", "default-on", "the account name did not default to on with no stored setting")
   try require(accountNameVisible(false) == false && accountNameVisible(true) == true,
               "account", "toggle-respected", "a stored setting was ignored")
+  // The checkbox has to actually exist in the Display tab. The i18n scan only proves the string
+  // is translated, not that anything renders it.
+  _ = NSApplication.shared
+  func findButton(_ view: NSView, _ id: String) -> NSButton? {
+    if let b = view as? NSButton, b.identifier?.rawValue == id { return b }
+    for sub in view.subviews { if let hit = findButton(sub, id) { return hit } }
+    return nil
+  }
+  let settingsTabs = AppDelegate().buildSettingsTabs()
+  let accountBox = settingsTabs.tabViewItems.compactMap { $0.view.flatMap { findButton($0, "showAccountName") } }.first
+  try require(accountBox != nil,
+              "account", "settings-checkbox", "the Show account name checkbox is missing from the settings window")
+  try require(accountBox?.title == tr("Show account name"),
+              "account", "settings-checkbox-title", "the checkbox is not labelled with the translated string")
+  try require(accountBox?.state == (accountNameVisible() ? .on : .off),
+              "account", "settings-checkbox-state", "the checkbox did not reflect the stored setting")
   print("self-test-core: account PASS")
+
+  // ── update-target ────────────────────────────────────────────────────────
+  // A fork that renames one URL but not the other checks upstream's version and then downloads a
+  // release that doesn't exist there — silently replacing the fork's build with upstream's.
+  // Deriving one from the other makes that divergence impossible.
+  try require(VERSION_URL == REPO_URL.replacingOccurrences(of: "https://github.com/",
+                                                           with: "https://raw.githubusercontent.com/")
+                + "/main/VERSION",
+              "update-target", "urls-agree", "VERSION_URL and REPO_URL point at different repositories")
+  // This is a fork. Merging upstream must not quietly hand the self-updater back to them.
+  try require(REPO_URL == "https://github.com/weritas247/claude-codex-battery",
+              "update-target", "fork-owner", "REPO_URL no longer points at this fork")
+  print("self-test-core: update-target PASS")
 
   print("self-test-core: PASS")
 }

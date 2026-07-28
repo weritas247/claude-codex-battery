@@ -3,7 +3,9 @@ import Cocoa
 
 let HOME = NSHomeDirectory()
 let STATE_DIR = "\(HOME)/.claude/swiftbar" // Shares cache/settings with the SwiftBar widget (same file format)
-let REPO_URL = "https://github.com/dennykim123/claude-codex-battery"
+// The single source of truth for which repository this build updates from. UpdateCheck derives its
+// raw.githubusercontent URL from this, so a fork only ever has to change this one line.
+let REPO_URL = "https://github.com/weritas247/claude-codex-battery"
 let CLAUDE_USAGE_URL = "https://claude.ai/settings/usage"
 let CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage"
 

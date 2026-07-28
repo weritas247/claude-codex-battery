@@ -2,7 +2,10 @@
 import Foundation
 
 private let UPDATE_CACHE = "\(STATE_DIR)/.update-check.json"
-private let VERSION_URL = "https://raw.githubusercontent.com/dennykim123/claude-codex-battery/main/VERSION"
+// Derived from REPO_URL rather than spelled out again: the version check and the release download
+// must never disagree about which repository they're talking to.
+let VERSION_URL = REPO_URL.replacingOccurrences(of: "https://github.com/",
+                                                with: "https://raw.githubusercontent.com/") + "/main/VERSION"
 
 func cmpVer(_ a: String, _ b: String) -> Int {
   let pa = a.split(separator: ".").map { Int($0) ?? 0 }
