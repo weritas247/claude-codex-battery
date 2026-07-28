@@ -12,6 +12,30 @@ struct Snapshot {
   let models: (models: [ModelUse], total: Double)?
   let codex: CodexUsage?
   let update: (latest: String?, hasUpdate: Bool)
+  // A `var` with a default keeps the existing construction sites compiling — a `let` with a
+  // default drops out of the memberwise initializer entirely.
+  var accounts: AccountNames = .none
+}
+
+// Header strings are pure functions so they can be asserted without a filesystem. With no account
+// the segment is dropped whole, leaving a header identical to the one before this feature.
+func accountSuffix(_ account: String?) -> String {
+  guard let account, !account.isEmpty else { return "" }
+  return " · \(account)"
+}
+
+func claudeHeaderTitle(account: String?, usageWord: String) -> String {
+  "Claude Code\(accountSuffix(account)) · \(usageWord) ↗"
+}
+
+func codexHeaderTitle(plan: String?, limitId: String?, account: String?, usageWord: String) -> String {
+  let planSuffix = plan.map { " · \($0)" } ?? limitId.map { " · \($0)" } ?? ""
+  return "Codex\(planSuffix)\(accountSuffix(account)) · \(usageWord) ↗"
+}
+
+func headerAccessibilityLabel(_ base: String, account: String?) -> String {
+  guard let account, !account.isEmpty else { return base }
+  return "\(base) — \(account)"
 }
 
 @discardableResult
@@ -72,12 +96,13 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
 
   if hasClaude {
     let usageTitle = tr("Open Claude usage", language: language)
-    let header = row(menu, "Claude Code · " + tr("usage", language: language) + " ↗",
+    let header = row(menu, claudeHeaderTitle(account: snap.accounts.claude,
+                                             usageWord: tr("usage", language: language)),
                      size: 13, color: GRAY, action: #selector(AppDelegate.openLink(_:)),
                      target: target, repr: CLAUDE_USAGE_URL)
     header.image = assets.providerImage(for: .claude)
     header.toolTip = usageTitle
-    header.setAccessibilityLabel(usageTitle)
+    header.setAccessibilityLabel(headerAccessibilityLabel(usageTitle, account: snap.accounts.claude))
     if let usage = snap.usage {
       if let window = usage.fiveHour {
         let remaining = normalizedRemaining(fromUsed: window.pct)
@@ -134,14 +159,15 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
   }
 
   if let codex = snap.codex {
-    let suffix = codex.plan.map { " · \($0)" } ?? codex.limitId.map { " · \($0)" } ?? ""
     let usageTitle = tr("Open Codex usage", language: language)
-    let header = row(menu, "Codex\(suffix) · " + tr("usage", language: language) + " ↗",
+    let header = row(menu, codexHeaderTitle(plan: codex.plan, limitId: codex.limitId,
+                                            account: snap.accounts.codex,
+                                            usageWord: tr("usage", language: language)),
                      size: 13, color: GRAY, action: #selector(AppDelegate.openLink(_:)),
                      target: target, repr: CODEX_USAGE_URL)
     header.image = assets.providerImage(for: .codex)
     header.toolTip = usageTitle
-    header.setAccessibilityLabel(usageTitle)
+    header.setAccessibilityLabel(headerAccessibilityLabel(usageTitle, account: snap.accounts.codex))
     let primary = windowState(codex.primary, now: now)
     let secondary = windowState(codex.secondary, now: now)
     if primary == nil, secondary == nil, let credits = codex.credits {

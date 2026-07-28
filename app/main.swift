@@ -687,7 +687,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                  primary: $0.primary, secondary: $0.secondary, credits: $0.credits)
     }
     return Snapshot(now: snapshot.now, usage: usage, block: snapshot.block,
-                    models: snapshot.models, codex: codex, update: snapshot.update)
+                    models: snapshot.models, codex: codex, update: snapshot.update,
+                    accounts: snapshot.accounts)
   }
 
   private func acceptAndPresent(_ snapshot: Snapshot, generation: RefreshGeneration,
@@ -2453,6 +2454,40 @@ private func runCoreSelfTest() throws {
   try require(claudeAccountName(path: claudeOther) == "someone.else"
                 && claudeAccountName(path: claudeGood) == "dev.account",
               "account", "cache-per-path", "the mtime cache ignored the path and returned another file's value")
+
+  // Header assembly — exact output strings, asserted without touching the filesystem.
+  try require(claudeHeaderTitle(account: "dev.account", usageWord: "usage")
+                == "Claude Code · dev.account · usage ↗",
+              "account", "header-claude", "the account was not inlined into the Claude header")
+  try require(claudeHeaderTitle(account: nil, usageWord: "usage") == "Claude Code · usage ↗",
+              "account", "header-claude-none", "without an account the Claude header changed shape")
+  try require(codexHeaderTitle(plan: "prolite", limitId: nil, account: "dev.account", usageWord: "usage")
+                == "Codex · prolite · dev.account · usage ↗",
+              "account", "header-codex", "the Codex header did not put the account after the plan")
+  try require(codexHeaderTitle(plan: nil, limitId: "weekly", account: "abc", usageWord: "usage")
+                == "Codex · weekly · abc · usage ↗",
+              "account", "header-codex-limit", "the limitId fallback broke when plan was absent")
+  try require(codexHeaderTitle(plan: nil, limitId: nil, account: "abc", usageWord: "usage")
+                == "Codex · abc · usage ↗",
+              "account", "header-codex-noplan", "the separators doubled up with no plan at all")
+  try require(codexHeaderTitle(plan: "prolite", limitId: nil, account: nil, usageWord: "usage")
+                == "Codex · prolite · usage ↗",
+              "account", "header-codex-none", "without an account the Codex header changed shape")
+  // A translated "usage" word has to flow through unchanged.
+  try require(claudeHeaderTitle(account: "abc", usageWord: "사용량") == "Claude Code · abc · 사용량 ↗",
+              "account", "header-i18n", "the header ignored the translated usage word")
+  // VoiceOver users need to hear which account this is.
+  try require(headerAccessibilityLabel("Open Claude usage", account: "abc") == "Open Claude usage — abc"
+                && headerAccessibilityLabel("Open Claude usage", account: nil) == "Open Claude usage",
+              "account", "header-a11y", "the accessibility label did not carry the account")
+  // The retention path that revives a previous snapshot must not drop the account.
+  let acctSnap = Snapshot(now: now, usage: usage, block: nil, models: nil, codex: codex,
+                          update: (nil, false), accounts: AccountNames(claude: "abc", codex: "xyz"))
+  try require(acctSnap.accounts.claude == "abc" && acctSnap.accounts.codex == "xyz",
+              "account", "snapshot-field", "Snapshot did not carry the accounts")
+  try require(Snapshot(now: now, usage: nil, block: nil, models: nil, codex: nil,
+                       update: (nil, false)).accounts.claude == nil,
+              "account", "snapshot-default", "the accounts default is not .none")
   print("self-test-core: account PASS")
 
   print("self-test-core: PASS")
