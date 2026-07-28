@@ -2375,6 +2375,47 @@ private func runCoreSelfTest() throws {
               "battery-color", "tab-restore", "settings tab restoration no longer clamps out-of-range indices")
   print("self-test-core: battery-color PASS")
 
+  // ── account ──────────────────────────────────────────────────────────────
+  // Local part: keep what precedes the "@". A value without one is treated as a
+  // username-style login and used whole.
+  try require(emailLocalPart("a@b.com") == "a", "account", "local-part", "the part before @ was not taken")
+  try require(emailLocalPart("noatsign") == "noatsign",
+              "account", "local-part-no-at", "a value without @ was not used whole")
+  try require(emailLocalPart("@x.com") == nil,
+              "account", "local-part-empty", "an empty local part leaked through as a blank name")
+  try require(emailLocalPart("") == nil && emailLocalPart(nil) == nil && emailLocalPart("   ") == nil,
+              "account", "local-part-blank", "blank input did not collapse to nil")
+
+  // JWT payload decode. base64url carries no padding, so Data(base64Encoded:) rejects it as-is.
+  // The three payloads below are 21/20/19 bytes — needing 0/1/2 padding characters.
+  func testJWT(_ payload: String) -> String {
+    let b64 = Data(payload.utf8).base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+    return "header.\(b64).signature"
+  }
+  try require(jwtEmail(testJWT("{\"email\":\"abc@b.com\"}")) == "abc@b.com",
+              "account", "jwt-pad0", "a payload needing no padding failed to decode")
+  try require(jwtEmail(testJWT("{\"email\":\"ab@b.com\"}")) == "ab@b.com",
+              "account", "jwt-pad1", "a payload needing one = failed to decode")
+  try require(jwtEmail(testJWT("{\"email\":\"a@b.com\"}")) == "a@b.com",
+              "account", "jwt-pad2", "a payload needing two = failed to decode")
+  try require(jwtEmail(nil) == nil && jwtEmail("only.two") == nil
+                && jwtEmail("a.!!!!.c") == nil && jwtEmail(testJWT("not json")) == nil
+                && jwtEmail(testJWT("{\"sub\":\"x\"}")) == nil,
+              "account", "jwt-reject", "a malformed token produced a non-nil value")
+
+  // Length cap: keeps a long corporate account from widening the whole menu.
+  try require(truncateAccount(String(repeating: "a", count: 25)) == String(repeating: "a", count: 20) + "…",
+              "account", "truncate", "a 25-character local part was not cut to 20 + …")
+  try require(truncateAccount(String(repeating: "a", count: 20)) == String(repeating: "a", count: 20),
+              "account", "truncate-boundary", "a name of exactly 20 characters got an ellipsis")
+  // Hangul is three bytes in UTF-8 — counting characters, not bytes, keeps it intact.
+  try require(truncateAccount(String(repeating: "가", count: 25)) == String(repeating: "가", count: 20) + "…",
+              "account", "truncate-multibyte", "a multi-byte name was not cut on character boundaries")
+  print("self-test-core: account PASS")
+
   print("self-test-core: PASS")
 }
 
