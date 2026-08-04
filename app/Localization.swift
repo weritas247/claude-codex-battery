@@ -62,6 +62,13 @@ private let TR: [String: [String: String]] = [
     "zh-Hant": "%@ 前的快取 — 請檢查登入/網路",
     "es": "caché de hace %@ — revisa sesión/red",
   ],
+  "rate limited — retrying in %@ (cached %@ ago)": [
+    "ko": "요청 제한 — %@ 후 재시도 (%@ 전 캐시)",
+    "ja": "レート制限 — %@後に再試行 (%@前のキャッシュ)",
+    "zh-Hans": "触发限流 — %@ 后重试（%@ 前的缓存）",
+    "zh-Hant": "觸發限流 — %@ 後重試（%@ 前的快取）",
+    "es": "límite de solicitudes — reintento en %@ (caché de hace %@)",
+  ],
   "this block  $%.2f · %@ tokens · $%@/h": [
     "ko": "이번 블록  $%.2f · %@ 토큰 · $%@/h",
     "ja": "現在のブロック  $%.2f · %@ tokens · $%@/h",

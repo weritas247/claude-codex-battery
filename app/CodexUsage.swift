@@ -56,7 +56,7 @@ private func parseCredits(_ a: Any?) -> CodexCredits? {
 // into the session-log format. primary/secondary are "whichever window is active at the time," so the slot is decided by window length.
 private func fetchCodexLive(now: Int) -> CodexUsage? {
   guard let c = readCodexToken() else { return nil }
-  guard let raw = httpGet("https://chatgpt.com/backend-api/wham/usage",
+  guard let raw = httpGet("https://\(CODEX_API_HOST)/backend-api/wham/usage",
                           headers: ["Authorization": "Bearer \(c.token)",
                                     "ChatGPT-Account-Id": c.account,
                                     "User-Agent": "codex-cli"], timeout: 5, provider: .codex),

@@ -25,7 +25,10 @@ func collectSnapshot() -> Snapshot {
                   codex: getCodex(now: now),
                   update: getUpdateInfo(now: now),
                   // Off means the login files are never opened at all.
-                  accounts: accountNameVisible() ? accountNames() : .none)
+                  accounts: accountNameVisible() ? accountNames() : .none,
+                  rateLimited: RateLimitState(
+                    claude: rateLimitRemaining(host: CLAUDE_API_HOST, now: now),
+                    codex: rateLimitRemaining(host: CODEX_API_HOST, now: now)))
 }
 
 // Snapshot → menu bar battery items (same logic as the widget JS's rendering code)
@@ -2371,6 +2374,7 @@ private func runCoreSelfTest() throws {
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
     "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
     "Battery color", "Custom…", "Settings", "Show account name",
+    "rate limited — retrying in %@ (cached %@ ago)",
     "Hue", "Saturation", "Brightness", "Preview", "Done",
     "Default — follows light and dark", "Battery size and Cat apply to pixel batteries only.",
     "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
@@ -2533,6 +2537,66 @@ private func runCoreSelfTest() throws {
   try require(REPO_URL == "https://github.com/weritas247/claude-codex-battery",
               "update-target", "fork-owner", "REPO_URL no longer points at this fork")
   print("self-test-core: update-target PASS")
+
+  // ── rate-limit ───────────────────────────────────────────────────────────
+  // Anthropic answers an over-eager poller with 429 + "retry-after: 2629". Ignoring that header
+  // and retrying on the fixed 120s timer keeps renewing the penalty, so the app never recovers —
+  // observed as four straight days of stale Claude data.
+  resetRateLimits()
+  try require(parseRetryAfter("2629") == 2629,
+              "rate-limit", "retry-after-seconds", "a plain seconds Retry-After was not parsed")
+  try require(parseRetryAfter("  30 ") == 30,
+              "rate-limit", "retry-after-padded", "a padded Retry-After was not parsed")
+  try require(parseRetryAfter(nil) == nil && parseRetryAfter("later") == nil
+                && parseRetryAfter("0") == nil && parseRetryAfter("-5") == nil,
+              "rate-limit", "retry-after-reject", "a missing or non-positive Retry-After became a cooldown")
+
+  // A 429 without a usable header still has to back off — otherwise the retry storm continues.
+  noteRateLimit(host: "api.anthropic.com", retryAfter: nil, now: 1_000)
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == RATE_LIMIT_FALLBACK_SECONDS,
+              "rate-limit", "fallback", "a 429 with no Retry-After did not fall back to a default cooldown")
+
+  resetRateLimits()
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 2_629, now: 1_000)
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == 2_629,
+              "rate-limit", "cooldown-set", "the cooldown did not take the server's Retry-After")
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 2_000) == 1_629,
+              "rate-limit", "cooldown-counts-down", "the cooldown did not shrink as time passed")
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 3_629) == nil,
+              "rate-limit", "cooldown-expires", "the cooldown never expired")
+  // One throttled host must not silence the other — Codex kept working through Claude's 429.
+  try require(rateLimitRemaining(host: "chatgpt.com", now: 1_000) == nil,
+              "rate-limit", "per-host", "a cooldown on one host leaked to another")
+  // A later 429 must not shorten an active cooldown.
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 10, now: 1_000)
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == 2_629,
+              "rate-limit", "cooldown-no-shorten", "a shorter Retry-After cut an active cooldown short")
+  resetRateLimits()
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == nil,
+              "rate-limit", "reset", "resetRateLimits did not clear the cooldowns")
+
+  // The old copy told the user to check their login while the login was fine. A 429 is neither a
+  // login nor a network fault, and the row has to say which it is and when the app will try again.
+  let limitedSnap = Snapshot(
+    now: now, usage: ClaudeUsage(measuredAt: now - 300, live: false,
+                                 fiveHour: usage.fiveHour, weekly: nil, fable: nil),
+    block: nil, models: nil, codex: nil, update: (nil, false),
+    rateLimited: RateLimitState(claude: 2_629, codex: nil))
+  let limitedMenu = buildMenu(limitedSnap, swiftBarDup: false, target: menuDelegate,
+                              assets: assets, language: "en")
+  try require(limitedMenu.items.contains { $0.title.contains("rate limited") && $0.title.contains("43m") },
+              "rate-limit", "menu-copy", "the dropdown did not report the provider as rate limited")
+  try require(!limitedMenu.items.contains { $0.title.contains("check login/network") },
+              "rate-limit", "menu-copy-not-login", "the dropdown still blamed the login for a 429")
+  // A plain stale cache — no 429 — must keep the original login/network wording.
+  let staleSnap = Snapshot(
+    now: now, usage: ClaudeUsage(measuredAt: now - 300, live: false,
+                                 fiveHour: usage.fiveHour, weekly: nil, fable: nil),
+    block: nil, models: nil, codex: nil, update: (nil, false))
+  try require(buildMenu(staleSnap, swiftBarDup: false, target: menuDelegate, assets: assets, language: "en")
+                .items.contains { $0.title.contains("check login/network") },
+              "rate-limit", "menu-copy-unchanged", "a non-429 stale cache lost its original wording")
+  print("self-test-core: rate-limit PASS")
 
   print("self-test-core: PASS")
 }

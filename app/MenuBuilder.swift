@@ -15,6 +15,14 @@ struct Snapshot {
   // A `var` with a default keeps the existing construction sites compiling — a `let` with a
   // default drops out of the memberwise initializer entirely.
   var accounts: AccountNames = .none
+  var rateLimited: RateLimitState = .none
+}
+
+// Seconds until each provider's API may be called again, or nil when it is free.
+struct RateLimitState {
+  let claude: Int?
+  let codex: Int?
+  static let none = RateLimitState(claude: nil, codex: nil)
 }
 
 // Header strings are pure functions so they can be asserted without a filesystem. With no account
@@ -74,6 +82,18 @@ private func gaugeRow(_ menu: NSMenu, _ label: String, remaining: Double, resetT
   item.setAccessibilityHelp(usageTitle)
 }
 
+// Why the numbers are stale. A 429 is neither a login nor a network fault, so saying
+// "check login/network" sends the user hunting for a problem that isn't there — name the throttle
+// and when the app will try again instead.
+func freshnessText(live: Bool, measuredAt: Int, now: Int, rateLimitedFor: Int?, language: String) -> String {
+  if live { return tr("live · updated just now", language: language) }
+  let age = fmtDur(max(0, now - measuredAt))
+  if let wait = rateLimitedFor, wait > 0 {
+    return "⚠ " + trf("rate limited — retrying in %@ (cached %@ ago)", language: language, fmtDur(wait), age)
+  }
+  return "⚠ " + trf("cached %@ ago — check login/network", language: language, age)
+}
+
 private func resetText(_ resetsAt: Int?, now: Int, language: String) -> String? {
   guard let reset = resetsAt else { return nil }
   return reset <= now ? tr("reset", language: language)
@@ -125,10 +145,8 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
                  resetText: resetText(window.resetsAt, now: now, language: language),
                  usageURL: CLAUDE_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
       }
-      let freshness = usage.live
-        ? tr("live · updated just now", language: language)
-        : "⚠ " + trf("cached %@ ago — check login/network", language: language,
-                       fmtDur(max(0, now - usage.measuredAt)))
+      let freshness = freshnessText(live: usage.live, measuredAt: usage.measuredAt, now: now,
+                                    rateLimitedFor: snap.rateLimited.claude, language: language)
       row(menu, freshness, size: 11, color: usage.live ? GRAY : WARN)
     }
     if let block = snap.block {
@@ -191,10 +209,8 @@ func buildMenu(_ snap: Snapshot, swiftBarDup: Bool, target: AppDelegate,
       gaugeRow(menu, labels.week, remaining: normalizedRemaining(fromUsed: secondary.pct), resetText: codexReset(secondary),
                usageURL: CODEX_USAGE_URL, usageTitle: usageTitle, target: target, language: language, batteryGreen: batteryGreen)
     }
-    let freshness = codex.live
-      ? tr("live · updated just now", language: language)
-      : "⚠ " + trf("cached %@ ago — check login/network", language: language,
-                     fmtDur(max(0, now - codex.measuredAt)))
+    let freshness = freshnessText(live: codex.live, measuredAt: codex.measuredAt, now: now,
+                                  rateLimitedFor: snap.rateLimited.codex, language: language)
     row(menu, freshness, size: 11, color: codex.live ? GRAY : WARN)
     if let app = assets.installedApp(for: .codex) {
       let title = tr("Open Codex app", language: language)

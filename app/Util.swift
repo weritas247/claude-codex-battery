@@ -122,6 +122,50 @@ func runCmd(_ bin: String, _ args: [String], timeout: TimeInterval = 10) -> Stri
   return String(data: data, encoding: .utf8)
 }
 
+// ── Rate-limit cooldown ────────────────────────────────────────────────────
+// A 429 answer carries "retry-after: <seconds>". Retrying on the fixed REFRESH_SECONDS timer
+// anyway keeps renewing the penalty, so the app can never climb back out — that is how four
+// straight days of stale Claude data happened. Cooldowns are keyed by host, so one throttled
+// provider never silences the other, and they live in memory only.
+let RATE_LIMIT_FALLBACK_SECONDS = 600 // a 429 with no usable header still has to back off
+
+// The hosts the usage fetchers call. Cooldowns are keyed by host, so these have to be the same
+// strings the request URLs are built from — hence both fetchers interpolate these constants.
+let CLAUDE_API_HOST = "api.anthropic.com"
+let CODEX_API_HOST = "chatgpt.com"
+
+private var rateLimitUntil: [String: Int] = [:]
+private let rateLimitLock = NSLock()
+
+// Retry-After as a plain seconds count. Anthropic sends that form; anything else (an HTTP date,
+// junk, or a non-positive value) means "we don't know", and the caller falls back.
+func parseRetryAfter(_ raw: String?) -> Int? {
+  guard let seconds = raw.flatMap({ Int($0.trimmingCharacters(in: .whitespaces)) }), seconds > 0 else { return nil }
+  return seconds
+}
+
+func noteRateLimit(host: String, retryAfter: Int?, now: Int) {
+  let until = now + (retryAfter ?? RATE_LIMIT_FALLBACK_SECONDS)
+  rateLimitLock.lock()
+  defer { rateLimitLock.unlock() }
+  // Never shorten an active cooldown: a later 429 with a small Retry-After must not undo a long one.
+  rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
+}
+
+// Seconds still to wait, or nil when the host is free to call.
+func rateLimitRemaining(host: String, now: Int) -> Int? {
+  rateLimitLock.lock()
+  defer { rateLimitLock.unlock() }
+  guard let until = rateLimitUntil[host], until > now else { return nil }
+  return until - now
+}
+
+func resetRateLimits() {
+  rateLimitLock.lock()
+  defer { rateLimitLock.unlock() }
+  rateLimitUntil.removeAll()
+}
+
 // Synchronous HTTP GET (only 2xx counts as success) — token stays in headers only, never in files/process args
 // If CCB_DEBUG=1, prints status/errors to stderr (for diagnostics)
 var providerActivityHandler: ((Provider, Bool) -> Void)?
@@ -129,14 +173,28 @@ var providerActivityHandler: ((Provider, Bool) -> Void)?
 func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval = 8,
              provider: Provider? = nil) -> Data? {
   guard let url = URL(string: urlStr) else { return nil }
+  let host = url.host ?? urlStr
+  // Still serving a 429 penalty — don't spend the request, and don't renew the penalty.
+  if let wait = rateLimitRemaining(host: host, now: Int(Date().timeIntervalSince1970)) {
+    if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
+      FileHandle.standardError.write(Data("[httpGet] \(host) rate-limited, \(wait)s left — skipped\n".utf8))
+    }
+    return nil
+  }
   var req = URLRequest(url: url, timeoutInterval: timeout)
   headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
   let sem = DispatchSemaphore(value: 0)
   var result: Data? = nil
   if let provider { providerActivityHandler?(provider, true) }
   URLSession.shared.dataTask(with: req) { d, r, e in
-    let code = (r as? HTTPURLResponse)?.statusCode ?? -1
+    let response = r as? HTTPURLResponse
+    let code = response?.statusCode ?? -1
     if (200 ..< 300).contains(code) { result = d }
+    if code == 429 {
+      let header = response?.value(forHTTPHeaderField: "Retry-After")
+      noteRateLimit(host: host, retryAfter: parseRetryAfter(header),
+                    now: Int(Date().timeIntervalSince1970))
+    }
     if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
       let msg = "[httpGet] \(url.host ?? "?") status=\(code)\(e.map { " err=\($0.localizedDescription)" } ?? "")\n"
       FileHandle.standardError.write(Data(msg.utf8))

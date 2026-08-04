@@ -47,7 +47,7 @@ private func readClaudeToken() -> String? {
 
 private func fetchLive(now: Int) -> (data: [String: Any], measuredAt: Int, live: Bool)? {
   guard let token = readClaudeToken() else { return nil }
-  guard let raw = httpGet("https://api.anthropic.com/api/oauth/usage",
+  guard let raw = httpGet("https://\(CLAUDE_API_HOST)/api/oauth/usage",
                           headers: ["Authorization": "Bearer \(token)",
                                     "anthropic-beta": "oauth-2025-04-20"], timeout: 5, provider: .claude),
         let obj = jd(try? JSONSerialization.jsonObject(with: raw)),
