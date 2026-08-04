@@ -4,7 +4,11 @@ import Cocoa
 import QuartzCore
 import ServiceManagement
 
-let REFRESH_SECONDS = 120.0
+// 5 minutes — 288 calls a day per provider. At 2 minutes (720/day) Anthropic's usage endpoint
+// answered with 429 + a 44-minute Retry-After. httpGet backs off on that now, but polling this
+// far apart keeps us from provoking it in the first place. The cost is freshness: the dropdown
+// is rebuilt on each refresh, so its numbers can be up to this old when opened (⌘R forces one).
+let REFRESH_SECONDS = 300.0
 
 // If SwiftBar has the same widget plugin enabled, the battery shows up twice — detect and warn
 func swiftBarDuplicate() -> Bool {
