@@ -22,17 +22,33 @@ func swiftBarDuplicate() -> Bool {
 // Batch data collection (called from a background thread)
 func collectSnapshot() -> Snapshot {
   let now = Int(Date().timeIntervalSince1970)
-  return Snapshot(now: now,
-                  usage: getClaudeUsage(now: now),
-                  block: getClaudeBlock(now: now),
-                  models: getClaudeModels(),
-                  codex: getCodex(now: now),
-                  update: getUpdateInfo(now: now),
+  // Sequenced deliberately: the fetches arm the cooldowns and record the status codes that the
+  // diagnosis below reads, so they have to complete first. A 429 answered on this very pass is
+  // therefore already visible as a cooldown rather than surfacing as a bogus login warning.
+  let usage = getClaudeUsage(now: now)
+  let block = getClaudeBlock(now: now)
+  let models = getClaudeModels()
+  let codex = getCodex(now: now)
+  let update = getUpdateInfo(now: now)
+  let claudeWait = rateLimitRemaining(host: claudeRateLimitBucket(), now: now)
+  let codexWait = rateLimitRemaining(host: CODEX_API_HOST, now: now)
+
+  // Only diagnosed when the numbers are not live: the checks touch the keychain and ~/.codex, and
+  // a healthy refresh has no warning row to explain.
+  let liveOff = liveDisabled()
+  let claudeHealth: LiveFailure? = usage?.live == true ? nil
+    : diagnoseLive(liveOff: liveOff, credentialsPresent: claudeCredentialsPresent(),
+                   credentialsExpired: claudeCredentialsExpired(now: now),
+                   rateLimitedFor: claudeWait, lastStatus: lastHTTPStatus(bucket: claudeRateLimitBucket()))
+  let codexHealth: LiveFailure? = codex?.live == true ? nil
+    : diagnoseLive(liveOff: liveOff, credentialsPresent: codexCredentialsPresent(),
+                   rateLimitedFor: codexWait, lastStatus: lastHTTPStatus(bucket: CODEX_API_HOST))
+
+  return Snapshot(now: now, usage: usage, block: block, models: models, codex: codex, update: update,
                   // Off means the login files are never opened at all.
                   accounts: accountNameVisible() ? accountNames() : .none,
-                  rateLimited: RateLimitState(
-                    claude: rateLimitRemaining(host: CLAUDE_API_HOST, now: now),
-                    codex: rateLimitRemaining(host: CODEX_API_HOST, now: now)))
+                  rateLimited: RateLimitState(claude: claudeWait, codex: codexWait),
+                  health: ProviderHealth(claude: claudeHealth, codex: codexHealth))
 }
 
 // Snapshot → menu bar battery items (same logic as the widget JS's rendering code)
@@ -282,6 +298,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var settingsSizePopup: NSPopUpButton?
   var settingsCatPopup: NSPopUpButton?
   var settingsPixelOnlyNote: NSTextField?
+  // Parallel to the profile popup's items — the popup shows names, this keeps the full paths.
+  var settingsProfiles: [String] = []
   var colorSheet: NSWindow?
   var colorSheetPreview: NSView?
   var colorSheetSliders: (hue: NSSlider, saturation: NSSlider, brightness: NSSlider)?
@@ -695,9 +713,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       CodexUsage(measuredAt: $0.measuredAt, live: false, limitId: $0.limitId, plan: $0.plan,
                  primary: $0.primary, secondary: $0.secondary, credits: $0.credits)
     }
+    // rateLimited/health carry the reason the providers went stale, and this rebuild is exactly the
+    // path a stale provider takes. Omitting them let the memberwise defaults (.none/.unknown) erase
+    // the diagnosis on every refresh after the first, so a throttled account always ended up
+    // reported as "check login/network" — the one wording the 429 handling exists to avoid.
     return Snapshot(now: snapshot.now, usage: usage, block: snapshot.block,
                     models: snapshot.models, codex: codex, update: snapshot.update,
-                    accounts: snapshot.accounts)
+                    accounts: snapshot.accounts, rateLimited: snapshot.rateLimited,
+                    health: snapshot.health)
   }
 
   private func acceptAndPresent(_ snapshot: Snapshot, generation: RefreshGeneration,
@@ -1007,6 +1030,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let langCodes = ["auto"] + LANG_DISPLAY.map { $0.code }; let langTitles = [tr("System default")] + LANG_DISPLAY.map { $0.name }; let savedLang = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
     let generalGrid = NSGridView(views: [[NSTextField(labelWithString: tr("Language")), popup(langTitles, selected: langCodes.firstIndex(of: savedLang) ?? 0, action: #selector(settingsLanguageChanged(_:)))]]); generalGrid.rowSpacing = 12; generalGrid.columnSpacing = 24; general.addArrangedSubview(generalGrid)
     if #available(macOS 13.0, *) { let login = NSButton(checkboxWithTitle: tr("Start at login"), target: self, action: #selector(toggleLoginItem)); login.state = loginItemEnabled ? .on : .off; general.addArrangedSubview(login) }
+    // Only worth showing when there is something to switch to.
+    let profiles = discoverClaudeProfiles()
+    if profiles.count > 1 {
+      settingsProfiles = profiles
+      let titles = profiles.map { $0 == DEFAULT_CLAUDE_PROFILE ? tr("Default (~/.claude)") : ($0 as NSString).lastPathComponent }
+      let profileGrid = NSGridView(views: [[NSTextField(labelWithString: tr("Claude login")),
+                                            popup(titles, selected: profiles.firstIndex(of: claudeProfileDir()) ?? 0,
+                                                  action: #selector(settingsProfileChanged(_:)))]])
+      profileGrid.rowSpacing = 12; profileGrid.columnSpacing = 24; general.addArrangedSubview(profileGrid)
+      note(general, tr("Usage is account-level, so every login reports the same numbers. Switch if one login is rate limited."), lines: 3)
+    }
     separator(general); general.addArrangedSubview(NSTextField(labelWithString: "v\(APP_VERSION) · Claude & Codex Usage Battery")); let generalLinks = NSStackView(); generalLinks.orientation = .horizontal; generalLinks.spacing = 10; generalLinks.addArrangedSubview(actionButton(tr("Open GitHub page"), #selector(openGitHubFromSettings))); general.addArrangedSubview(generalLinks)
 
     let (_, display) = page(tr("Display"), icon: "paintbrush")
@@ -1145,6 +1179,70 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); applyPixelOnlyAvailability(); rerender() }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
+  @objc func settingsProfileChanged(_ sender: NSPopUpButton) {
+    guard sender.indexOfSelectedItem < settingsProfiles.count else { return }
+    UserDefaults.standard.set(settingsProfiles[sender.indexOfSelectedItem], forKey: CLAUDE_PROFILE_KEY)
+    // No cooldown to clear: each profile keeps its own (see claudeRateLimitBucket), so switching to
+    // a healthy login is immediate and switching back still honors the throttled one's penalty.
+    refresh()
+  }
+
+  // ── Recovery actions (dropdown warning submenu) ──────────────────────────
+  // Same effect as the Settings popup, reachable from the warning that motivates it.
+  @objc func switchClaudeProfileFromMenu(_ sender: NSMenuItem) {
+    guard let profile = sender.representedObject as? String, profile != claudeProfileDir() else { return }
+    UserDefaults.standard.set(profile, forKey: CLAUDE_PROFILE_KEY)
+    // Each profile keeps its own cooldown (see claudeRateLimitBucket), so a healthy login answers
+    // straight away and the throttled one keeps serving its penalty in the background.
+    refresh()
+  }
+
+  // Opens Terminal already running the sign-in, so the menu item does the thing it is named after.
+  // If the CLI cannot be located there is nothing to launch, so the command goes to the clipboard
+  // instead of opening a window that would only print "command not found".
+  @objc func signInToProfile(_ sender: NSMenuItem) {
+    guard let dir = sender.representedObject as? String else { return }
+    guard let cli = claudeCLIPath() else {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(signInCommand(for: dir), forType: .string)
+      let alert = NSAlert()
+      alert.messageText = tr("Claude Code was not found on this Mac")
+      alert.informativeText = tr("The sign-in command has been copied to the clipboard — run it in a terminal where the claude CLI is available.")
+      NSApp.activate(ignoringOtherApps: true)
+      alert.runModal()
+      return
+    }
+    let path = "\(NSTemporaryDirectory())claude-codex-battery-signin.command"
+    do {
+      try signInScript(for: dir, cli: cli).write(toFile: path, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    } catch { return }
+    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+  }
+
+  @objc func enableLiveUpdates() {
+    try? FileManager.default.removeItem(atPath: "\(STATE_DIR)/.no-live")
+    refresh()
+  }
+
+  // Deliberately gated behind a confirmation. Anthropic restarts the penalty clock on every request
+  // made during an active one, so this can turn a short throttle into a long one — the alert says so
+  // rather than letting a hopeful click quietly make things worse.
+  @objc func forceRetry(_ sender: NSMenuItem) {
+    let provider = (sender.representedObject as? String) ?? "claude"
+    let alert = NSAlert()
+    alert.messageText = tr("Retry while rate limited?")
+    alert.informativeText = tr("The server restarts its cooldown on every request made during a limit, so retrying now can keep the numbers stale for longer. Switching to another login is the safer fix.")
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: tr("Retry anyway"))
+    alert.addButton(withTitle: tr("Cancel"))
+    NSApp.activate(ignoringOtherApps: true)
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    clearRateLimit(host: provider == "claude" ? claudeRateLimitBucket() : CODEX_API_HOST,
+                   now: Int(Date().timeIntervalSince1970))
+    refresh()
+  }
+
   @objc func settingsLanguageChanged(_ sender: NSPopUpButton) { let codes = ["auto"] + LANG_DISPLAY.map { $0.code }; let item = NSMenuItem(); item.representedObject = codes[sender.indexOfSelectedItem]; setLang(item) }
   @objc func toggleMetric(_ sender: NSButton) { if let key = sender.identifier?.rawValue { UserDefaults.standard.set(sender.state == .on, forKey: key); rerender() } }
   @objc func openGitHubFromSettings() { NSWorkspace.shared.open(URL(string: REPO_URL)!) }
@@ -1611,8 +1709,13 @@ private func runCoreSelfTest() throws {
     ],
     total: 10.1
   )
+  // Carrying a live diagnosis into the retention path on purpose: this rebuild used to drop
+  // rateLimited/health onto their memberwise defaults, so from the second refresh onward a
+  // throttled account was reported as a login problem no matter what the fetch actually saw.
   let missing = Snapshot(now: now + 120, usage: nil, block: incomingBlock,
-                         models: incomingModels, codex: nil, update: ("9.9.9", true))
+                         models: incomingModels, codex: nil, update: ("9.9.9", true),
+                         rateLimited: RateLimitState(claude: 2_629, codex: 77),
+                         health: ProviderHealth(claude: .rateLimited(2_629), codex: .unreachable))
   completions[3](missing)
   let retained = refreshDelegate.lastSnap
   try require(retained?.now == now + 120
@@ -1651,6 +1754,11 @@ private func runCoreSelfTest() throws {
                 && refreshDelegate.acceptedRenderCount == 2,
               "refresh-retention", "provider-retention",
               "retained provider or newest ancillary fields differed")
+  try require(retained?.rateLimited.claude == 2_629 && retained?.rateLimited.codex == 77
+                && retained?.health.claude == .rateLimited(2_629)
+                && retained?.health.codex == .unreachable,
+              "refresh-retention", "diagnosis-retention",
+              "the retention rebuild reset the stale-data diagnosis to its defaults")
   try require(menus[1].items.filter { $0.title.contains("cached 2m ago") }.count == 2
                 && refreshDelegate.acceptedGenerations.map(\.value) == [5, 6]
                 && refreshDelegate.acceptedRefreshTriggers == [.timer, .manual],
@@ -2542,6 +2650,47 @@ private func runCoreSelfTest() throws {
               "update-target", "fork-owner", "REPO_URL no longer points at this fork")
   print("self-test-core: update-target PASS")
 
+  // Cooldowns are persisted, so point the store at a scratch file before any test touches them —
+  // a self-test run must never delete the real one and hand the app a free pass into a penalty.
+  let rlTempDir = NSTemporaryDirectory()
+    + "ccb-selftest-ratelimit-\(ProcessInfo.processInfo.processIdentifier)"
+  rateLimitStorePath = rlTempDir + "/.rate-limits.json"
+
+  // ── claude-profile ───────────────────────────────────────────────────────
+  // Anthropic rate limits the usage endpoint per config dir, not per account: ~/.claude was locked
+  // out for days while another login for the same account answered fine, seconds apart. Reading a
+  // different profile is safe because the figures are account-level — same numbers, working token.
+  try require(claudeKeychainService(for: "\(HOME)/.claude") == "Claude Code-credentials",
+              "claude-profile", "default-service", "the default profile stopped using the bare service name")
+  // Verified against this Mac's real keychain: ~/.claude-personal hashes to -49b8f306, which exists.
+  try require(claudeKeychainService(for: "/Users/test/.claude-work") == "Claude Code-credentials-03abf0ee",
+              "claude-profile", "hashed-service", "a non-default profile no longer matches Claude Code's naming")
+  try require(claudeKeychainService(for: "/Users/test/.claude-work/")
+                == claudeKeychainService(for: "/Users/test/.claude-work"),
+              "claude-profile", "trailing-slash", "a trailing slash produced a different keychain service")
+  try require(claudeProfileDir(nil) == "\(HOME)/.claude" && claudeProfileDir("") == "\(HOME)/.claude",
+              "claude-profile", "default-dir", "an unset profile did not fall back to ~/.claude")
+  try require(claudeProfileDir("/Users/test/.claude-x/") == "/Users/test/.claude-x",
+              "claude-profile", "saved-dir", "a saved profile was not honored or not normalized")
+  try require(discoverClaudeProfiles().first == "\(HOME)/.claude",
+              "claude-profile", "discovery-default-first", "the default profile was not offered first")
+  try require(Set(discoverClaudeProfiles()).count == discoverClaudeProfiles().count,
+              "claude-profile", "discovery-unique", "profile discovery returned duplicates")
+  // Each login carries its own cooldown. Sharing one host-wide key made a switch to a healthy login
+  // inherit the throttled login's penalty, which is the whole failure this setting exists to escape.
+  try require(claudeRateLimitBucket("\(HOME)/.claude") != claudeRateLimitBucket("\(HOME)/.claude-personal"),
+              "claude-profile", "bucket-per-profile", "two profiles shared one rate-limit cooldown")
+  try require(claudeRateLimitBucket("\(HOME)/.claude/") == claudeRateLimitBucket("\(HOME)/.claude"),
+              "claude-profile", "bucket-normalized", "a trailing slash split one profile into two cooldowns")
+  resetRateLimits()
+  noteRateLimit(host: claudeRateLimitBucket("\(HOME)/.claude"), retryAfter: 3_600, now: 1_000)
+  try require(rateLimitRemaining(host: claudeRateLimitBucket("\(HOME)/.claude-personal"), now: 1_000) == nil,
+              "claude-profile", "bucket-isolated", "a throttled login's cooldown leaked to another login")
+  try require(rateLimitRemaining(host: CODEX_API_HOST, now: 1_000) == nil,
+              "claude-profile", "bucket-codex-clear", "a Claude cooldown leaked to Codex")
+  resetRateLimits()
+  print("self-test-core: claude-profile PASS")
+
   // ── rate-limit ───────────────────────────────────────────────────────────
   // Anthropic answers an over-eager poller with 429 + "retry-after: 2629". Ignoring that header
   // and retrying on the fixed 120s timer keeps renewing the penalty, so the app never recovers —
@@ -2579,6 +2728,33 @@ private func runCoreSelfTest() throws {
   try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == nil,
               "rate-limit", "reset", "resetRateLimits did not clear the cooldowns")
 
+  // A cooldown has to outlive the process. It used to live only in memory, so quitting and
+  // reopening the app — or logging in, or installing an update — wiped it and fired a request
+  // straight into an active penalty. Anthropic restarts its clock on every such request, so the
+  // app kept re-arming the very lockout it was waiting out.
+  resetRateLimits()
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 3_600, now: 1_000)
+  reloadRateLimitsFromDisk() // exactly what a relaunch does to the in-memory table
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000) == 3_600,
+              "rate-limit", "survives-relaunch", "a relaunch wiped an active cooldown")
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 4_600) == nil,
+              "rate-limit", "persisted-expires", "a persisted cooldown outlived its own deadline")
+  // Codex must not inherit Claude's penalty through the store either.
+  try require(rateLimitRemaining(host: "chatgpt.com", now: 1_000) == nil,
+              "rate-limit", "persisted-per-host", "a persisted cooldown leaked to another host")
+
+  // Expired entries must not accumulate in the file forever.
+  resetRateLimits()
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 10, now: 1_000)
+  noteRateLimit(host: "chatgpt.com", retryAfter: 10, now: 5_000)
+  reloadRateLimitsFromDisk()
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 5_000) == nil
+                && rateLimitRemaining(host: "chatgpt.com", now: 5_000) == 10,
+              "rate-limit", "prune-expired", "an expired cooldown was kept in the store")
+
+  resetRateLimits()
+  try? FileManager.default.removeItem(atPath: rlTempDir)
+
   // The old copy told the user to check their login while the login was fine. A 429 is neither a
   // login nor a network fault, and the row has to say which it is and when the app will try again.
   let limitedSnap = Snapshot(
@@ -2601,6 +2777,236 @@ private func runCoreSelfTest() throws {
                 .items.contains { $0.title.contains("check login/network") },
               "rate-limit", "menu-copy-unchanged", "a non-429 stale cache lost its original wording")
   print("self-test-core: rate-limit PASS")
+
+  // ── stale-recovery ───────────────────────────────────────────────────────
+  // A stale row that only says "check login/network" makes every cause look like the same cause.
+  // These pin the classification order, the wording each cause gets, and the actions offered.
+  try require(diagnoseLive(liveOff: true, credentialsPresent: false, rateLimitedFor: 900,
+                           lastStatus: 401) == .liveDisabled,
+              "stale-recovery", "diagnose-opt-out",
+              "the .no-live opt-out did not outrank every other cause")
+  try require(diagnoseLive(liveOff: false, credentialsPresent: false, rateLimitedFor: 900,
+                           lastStatus: 429) == .signedOut,
+              "stale-recovery", "diagnose-signed-out",
+              "a missing login was reported as a throttle it could never have triggered")
+  try require(diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: 900,
+                           lastStatus: 429) == .rateLimited(900),
+              "stale-recovery", "diagnose-cooldown", "an active cooldown was not reported")
+  // The exact case behind the bogus warning: the local cooldown lapsed, the server disagreed.
+  try require(diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: nil,
+                           lastStatus: 429) == .rateLimited(0),
+              "stale-recovery", "diagnose-server-still-throttling",
+              "a 429 seen after the cooldown lapsed was blamed on the login")
+  try require(diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: nil,
+                           lastStatus: 401) == .authExpired
+                && diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: nil,
+                                lastStatus: 403) == .authExpired,
+              "stale-recovery", "diagnose-refused", "a refused login was not identified")
+  try require(diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: nil,
+                           lastStatus: HTTP_STATUS_TRANSPORT_ERROR) == .unreachable
+                && diagnoseLive(liveOff: false, credentialsPresent: true, rateLimitedFor: nil,
+                                lastStatus: nil) == .unreachable,
+              "stale-recovery", "diagnose-unreachable", "a transport failure was misclassified")
+
+  // Each cause gets its own sentence, and none of them may fall back to the catch-all.
+  let staleAt = now - 600
+  func fresh(_ failure: LiveFailure?, wait: Int? = nil) -> String {
+    freshnessText(live: false, measuredAt: staleAt, now: now, rateLimitedFor: wait,
+                  language: "en", failure: failure)
+  }
+  try require(fresh(.liveDisabled).contains("live updates are off")
+                && fresh(.signedOut).contains("no login found")
+                && fresh(.authExpired).contains("login expired, sign in again")
+                && fresh(.rateLimited(0)).contains("still rate limited")
+                && fresh(.unreachable).contains("can't reach the server"),
+              "stale-recovery", "copy-per-cause", "a diagnosed cause did not get its own wording")
+  try require(![LiveFailure.liveDisabled, .signedOut, .authExpired, .rateLimited(0), .unreachable]
+                .contains(where: { fresh($0).contains("check login/network") }),
+              "stale-recovery", "copy-no-catch-all",
+              "a diagnosed cause still fell back to the catch-all wording")
+  // A running countdown is more useful than the generic throttle sentence, so it still wins.
+  try require(fresh(.rateLimited(2_629), wait: 2_629).contains("retrying in 43m"),
+              "stale-recovery", "copy-countdown-wins",
+              "an active cooldown lost its countdown to the generic wording")
+  try require(fresh(nil).contains("check login/network"),
+              "stale-recovery", "copy-undiagnosed", "an undiagnosed stale row lost its wording")
+
+  // The submenu has to offer the fix that matches the cause — and never offer a plain "Retry"
+  // during a throttle, which is what turns a short penalty into a long one.
+  let healthyOther = ClaudeLogin(dir: "\(HOME)/.claude", present: true, expired: false, cooldown: nil)
+  let throttledCurrent = ClaudeLogin(dir: "\(HOME)/.claude-personal", present: true, expired: false,
+                                     cooldown: 900)
+  let deadLogin = ClaudeLogin(dir: "\(HOME)/.claude-work", present: true, expired: true, cooldown: nil)
+  let emptyLogin = ClaudeLogin(dir: "\(HOME)/.claude", present: false, expired: false, cooldown: nil)
+  let twoLogins = [healthyOther, throttledCurrent]
+  func recovery(_ failure: LiveFailure, provider: Provider = .claude,
+                logins: [ClaudeLogin] = twoLogins) -> [String] {
+    (recoveryMenu(for: failure, provider: provider, logins: logins,
+                  currentProfile: "\(HOME)/.claude-personal", appPath: "/Applications/Claude.app",
+                  target: menuDelegate, language: "en")?.items ?? []).map(\.title)
+  }
+  try require(recovery(.liveDisabled) == ["Turn live updates back on"],
+              "stale-recovery", "actions-opt-out",
+              "the opt-out offered anything other than turning live updates back on")
+  try require(recovery(.rateLimited(900)).contains("Switch Claude login")
+                && recovery(.rateLimited(900)).contains(where: { $0.hasPrefix("Force retry now") })
+                && !recovery(.rateLimited(900)).contains("Retry now"),
+              "stale-recovery", "actions-throttled",
+              "a throttled provider was offered a plain retry instead of a guarded one")
+  try require(recovery(.unreachable).contains("Retry now")
+                && !recovery(.unreachable).contains(where: { $0.hasPrefix("Force retry now") })
+                && !recovery(.unreachable).contains("Switch Claude login"),
+              "stale-recovery", "actions-unreachable",
+              "an unreachable server offered throttle-specific actions")
+  // A row labelled "sign in" has to sign the user in. It launches Claude Code against the config
+  // dir it names — the desktop app cannot stand in for that, because it only ever reaches
+  // ~/.claude and so would refresh a login that is not the broken one.
+  let expiredCurrent = ClaudeLogin(dir: "\(HOME)/.claude-personal", present: true, expired: true,
+                                   cooldown: nil)
+  let absentCurrent = ClaudeLogin(dir: "\(HOME)/.claude-personal", present: false, expired: false,
+                                  cooldown: nil)
+  try require(recovery(.authExpired, logins: [healthyOther, expiredCurrent])
+                .contains("Sign in to .claude-personal…")
+                && recovery(.signedOut, logins: [healthyOther, absentCurrent])
+                  .contains("Sign in to .claude-personal…")
+                && !recovery(.authExpired, logins: [healthyOther, expiredCurrent])
+                  .contains("Sign in with the Claude app"),
+              "stale-recovery", "actions-sign-in-named-profile",
+              "a broken named login was not offered a sign-in that reaches it")
+  // A throttle is not a login problem, so the healthy-but-throttled login must not be told to sign
+  // in — what earns a sign-in row is the dead profile beside it, because reviving that is the only
+  // thing that creates something to switch to.
+  let deadOthers = recovery(.rateLimited(900), logins: [emptyLogin, throttledCurrent, deadLogin])
+  try require(!deadOthers.contains("Sign in to .claude-personal…")
+                && deadOthers.contains("Sign in to a login"),
+              "stale-recovery", "actions-sign-in-targets-the-dead",
+              "the sign-in offer named the working login instead of the ones that need it")
+  let signInTargets = (recoveryMenu(for: .rateLimited(900), provider: .claude,
+                                    logins: [emptyLogin, throttledCurrent, deadLogin],
+                                    currentProfile: "\(HOME)/.claude-personal",
+                                    appPath: nil, target: menuDelegate, language: "en")?
+    .items.first { $0.title == "Sign in to a login" }?.submenu?.items ?? [])
+  try require(signInTargets.map(\.title) == ["Default (~/.claude)", ".claude-work"]
+                && signInTargets.allSatisfy { $0.target != nil && $0.action != nil },
+              "stale-recovery", "actions-sign-in-list",
+              "the sign-in submenu did not list exactly the logins that need one, wired to act")
+  // Nothing is broken except the throttle, and a healthy alternative exists — no sign-in at all.
+  try require(!recovery(.rateLimited(900)).contains(where: { $0.hasPrefix("Sign in") }),
+              "stale-recovery", "actions-sign-in-not-offered",
+              "a sign-in was offered when every login was already usable")
+  try require(signInCommand(for: "\(HOME)/.claude-personal/")
+                == "CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" claude",
+              "stale-recovery", "sign-in-command",
+              "the sign-in command did not target the profile it names")
+  // Terminal runs a .command under a non-login shell, so a bare `claude` would not resolve.
+  let script = signInScript(for: "\(HOME)/.claude-personal", cli: "/usr/local/bin/claude")
+  try require(script.hasPrefix("#!/bin/bash")
+                && script.contains("CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" /usr/local/bin/claude"),
+              "stale-recovery", "sign-in-script",
+              "the launched script would not reach the CLI or the profile it names")
+  // One login means nothing to switch to, and Codex has no profile concept at all.
+  try require(!recovery(.rateLimited(900), logins: [throttledCurrent]).contains("Switch Claude login")
+                && !recovery(.rateLimited(900), provider: .codex, logins: []).contains("Switch Claude login"),
+              "stale-recovery", "actions-switcher-scope",
+              "the login switcher appeared where there was nothing to switch")
+  func switcherMenu(_ logins: [ClaudeLogin]) -> NSMenu? {
+    recoveryMenu(for: .rateLimited(900), provider: .claude, logins: logins,
+                 currentProfile: "\(HOME)/.claude-personal", appPath: "/Applications/Claude.app",
+                 target: menuDelegate, language: "en")?
+      .items.first(where: { $0.title == "Switch Claude login" })?.submenu
+  }
+  let switcher = switcherMenu(twoLogins)
+  try require(switcher?.items.count == 2
+                && switcher?.items.map(\.state) == [.off, .on]
+                && switcher?.items.map { $0.representedObject as? String }
+                  == twoLogins.map(\.dir),
+              "stale-recovery", "actions-switcher-marks-current",
+              "the login switcher did not list both logins with the active one checked")
+
+  // The failure the flow shipped with: a keychain entry is not a working login. A logged-out or
+  // long-expired profile was offered as an escape from a throttle, so following the advice landed
+  // on a refusal and back where it started. Dead logins stay visible, but say why and cannot be
+  // picked — and when none of them can answer, the flow stops pretending switching is the fix.
+  let deadSwitcher = switcherMenu([emptyLogin, throttledCurrent, deadLogin])
+  try require(deadSwitcher?.items.map(\.title) == [
+    "Default (~/.claude) — no login",
+    ".claude-personal — rate limited 15m",
+    ".claude-work — login expired",
+  ], "stale-recovery", "switcher-states-named",
+  "the switcher did not say what state each login was in")
+  try require(deadSwitcher?.items.map(\.isEnabled) == [false, false, false],
+              "stale-recovery", "switcher-dead-not-clickable",
+              "a login that cannot answer was still offered as a switch target")
+  try require(switcherMenu(twoLogins)?.items.map(\.isEnabled) == [true, false],
+              "stale-recovery", "switcher-healthy-clickable",
+              "a usable alternative login was not clickable")
+  let noWayOut = recovery(.rateLimited(900), logins: [emptyLogin, throttledCurrent, deadLogin])
+  try require(noWayOut.contains("No other login is available to switch to")
+                && noWayOut.contains("Sign in to a login"),
+              "stale-recovery", "actions-no-alternative",
+              "a throttle with no healthy alternative did not offer a way to create one")
+  try require(!recovery(.rateLimited(900)).contains("No other login is available to switch to")
+                && !recovery(.rateLimited(900)).contains(where: { $0.hasPrefix("Sign in to") }),
+              "stale-recovery", "actions-alternative-exists",
+              "a throttle with a healthy alternative was told to sign in instead of switch")
+  // A locally lapsed deadline is enough — no need to spend a request to be told 401.
+  try require(diagnoseLive(liveOff: false, credentialsPresent: true, credentialsExpired: true,
+                           rateLimitedFor: 900, lastStatus: nil) == .authExpired,
+              "stale-recovery", "diagnose-local-expiry",
+              "an expired token waited for the server to refuse it")
+
+  // Wired through the real menu: the warning row carries the flow, a healthy row carries nothing.
+  let diagnosedSnap = Snapshot(
+    now: now, usage: ClaudeUsage(measuredAt: staleAt, live: false, fiveHour: usage.fiveHour,
+                                 weekly: nil, fable: nil),
+    block: nil, models: nil, codex: nil, update: (nil, false),
+    health: ProviderHealth(claude: .rateLimited(0), codex: nil))
+  let diagnosedRow = buildMenu(diagnosedSnap, swiftBarDup: false, target: menuDelegate,
+                               assets: assets, language: "en", logins: twoLogins,
+                               currentClaudeProfile: "\(HOME)/.claude")
+    .items.first { $0.title.contains("still rate limited") }
+  try require(diagnosedRow?.submenu != nil,
+              "stale-recovery", "menu-attaches-flow",
+              "the diagnosed warning row exposed no way to act on it")
+  // Attaching the submenu is not the same as being able to open it. NSMenu.autoenablesItems is on
+  // by default and disables anything without an action — and a disabled parent still draws its
+  // arrow while refusing to open. update() runs exactly the enabling pass AppKit runs on display.
+  let flowMenu = buildMenu(diagnosedSnap, swiftBarDup: false, target: menuDelegate, assets: assets,
+                           language: "en", logins: twoLogins,
+                           currentClaudeProfile: "\(HOME)/.claude")
+  flowMenu.update()
+  let flowRow = flowMenu.items.first { $0.title.contains("still rate limited") }
+  try require(flowRow?.isEnabled == true,
+              "stale-recovery", "menu-flow-openable",
+              "the warning row was disabled, so its recovery submenu could never be opened")
+  flowRow?.submenu?.update()
+  // Submenu parents and informational rows carry no action by design; what must hold is that
+  // anything that looks clickable is clickable, and that the flow offers at least one such thing.
+  let flowItems = flowRow?.submenu?.items.filter { !$0.isSeparatorItem } ?? []
+  let clickable = flowItems.filter { $0.action != nil }
+  try require(!clickable.isEmpty && clickable.allSatisfy { $0.target != nil && $0.isEnabled },
+              "stale-recovery", "menu-flow-actionable",
+              "the flow offered no working action, or wired one to nothing")
+  // Enabling is decided by login health, so AppKit's automatic pass must not run here and
+  // re-enable the dead entries — the switcher opts out of it, and update() must respect that.
+  let flowSwitcher = flowItems.first { $0.title == "Switch Claude login" }?.submenu
+  flowSwitcher?.update()
+  try require(flowSwitcher?.items.allSatisfy { $0.target != nil } == true
+                && flowSwitcher?.items.first(where: { $0.state == .on })?.isEnabled == false,
+              "stale-recovery", "menu-switcher-actionable",
+              "the switcher lost its wiring, or offered a switch to the login already in use")
+  let liveSnap = Snapshot(
+    now: now, usage: ClaudeUsage(measuredAt: now, live: true, fiveHour: usage.fiveHour,
+                                 weekly: nil, fable: nil),
+    block: nil, models: nil, codex: nil, update: (nil, false),
+    health: ProviderHealth(claude: .rateLimited(0), codex: nil))
+  try require(buildMenu(liveSnap, swiftBarDup: false, target: menuDelegate, assets: assets,
+                        language: "en", logins: twoLogins,
+                        currentClaudeProfile: "\(HOME)/.claude")
+                .items.first { $0.title.contains("live · updated just now") }?.submenu == nil,
+              "stale-recovery", "menu-live-has-no-flow",
+              "a live row carried a recovery submenu for a problem it does not have")
+  print("self-test-core: stale-recovery PASS")
 
   print("self-test-core: PASS")
 }

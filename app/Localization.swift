@@ -69,6 +69,132 @@ private let TR: [String: [String: String]] = [
     "zh-Hant": "觸發限流 — %@ 後重試（%@ 前的快取）",
     "es": "límite de solicitudes — reintento en %@ (caché de hace %@)",
   ],
+  // ── Stale-data diagnosis and its recovery submenu ──────────────────────────
+  "cached %@ ago — live updates are off": [
+    "ko": "%@ 전 캐시 — 실시간 조회가 꺼져 있음",
+    "ja": "%@前のキャッシュ — ライブ更新がオフ",
+    "zh-Hans": "%@ 前的缓存 — 实时更新已关闭",
+    "zh-Hant": "%@ 前的快取 — 即時更新已關閉",
+    "es": "caché de hace %@ — las actualizaciones en vivo están desactivadas",
+  ],
+  "cached %@ ago — no login found": [
+    "ko": "%@ 전 캐시 — 로그인 정보 없음",
+    "ja": "%@前のキャッシュ — ログイン情報が見つかりません",
+    "zh-Hans": "%@ 前的缓存 — 未找到登录信息",
+    "zh-Hant": "%@ 前的快取 — 找不到登入資訊",
+    "es": "caché de hace %@ — no se encontró sesión",
+  ],
+  "cached %@ ago — login expired, sign in again": [
+    "ko": "%@ 전 캐시 — 로그인 만료됨, 다시 로그인 필요",
+    "ja": "%@前のキャッシュ — ログインの期限切れ。再ログインが必要です",
+    "zh-Hans": "%@ 前的缓存 — 登录已过期，请重新登录",
+    "zh-Hant": "%@ 前的快取 — 登入已過期，請重新登入",
+    "es": "caché de hace %@ — sesión caducada, inicia sesión otra vez",
+  ],
+  "cached %@ ago — still rate limited by the server": [
+    "ko": "%@ 전 캐시 — 서버가 아직 요청 제한 중",
+    "ja": "%@前のキャッシュ — サーバー側のレート制限が継続中",
+    "zh-Hans": "%@ 前的缓存 — 服务器仍在限流",
+    "zh-Hant": "%@ 前的快取 — 伺服器仍在限流",
+    "es": "caché de hace %@ — el servidor sigue limitando",
+  ],
+  "cached %@ ago — can't reach the server": [
+    "ko": "%@ 전 캐시 — 서버에 연결할 수 없음",
+    "ja": "%@前のキャッシュ — サーバーに接続できません",
+    "zh-Hans": "%@ 前的缓存 — 无法连接服务器",
+    "zh-Hant": "%@ 前的快取 — 無法連線伺服器",
+    "es": "caché de hace %@ — no se puede contactar el servidor",
+  ],
+  "Turn live updates back on": [
+    "ko": "실시간 조회 다시 켜기", "ja": "ライブ更新を再度オンにする",
+    "zh-Hans": "重新开启实时更新", "zh-Hant": "重新開啟即時更新",
+    "es": "Reactivar actualizaciones en vivo",
+  ],
+  "no login": [
+    "ko": "로그인 없음", "ja": "ログインなし", "zh-Hans": "无登录", "zh-Hant": "無登入", "es": "sin sesión",
+  ],
+  "login expired": [
+    "ko": "로그인 만료됨", "ja": "ログイン期限切れ", "zh-Hans": "登录已过期",
+    "zh-Hant": "登入已過期", "es": "sesión caducada",
+  ],
+  "rate limited %@": [
+    "ko": "요청 제한 %@ 남음", "ja": "レート制限 残り%@", "zh-Hans": "限流中 剩余 %@",
+    "zh-Hant": "限流中 剩餘 %@", "es": "limitado %@",
+  ],
+  "ready": [
+    "ko": "사용 가능", "ja": "利用可能", "zh-Hans": "可用", "zh-Hant": "可用", "es": "disponible",
+  ],
+  "No other login is available to switch to": [
+    "ko": "전환할 수 있는 다른 로그인이 없습니다",
+    "ja": "切り替えられる他のログインがありません",
+    "zh-Hans": "没有其他可切换的登录",
+    "zh-Hant": "沒有其他可切換的登入",
+    "es": "No hay otra sesión a la que cambiar",
+  ],
+  "Switch Claude login": [
+    "ko": "Claude 로그인 전환", "ja": "Claudeのログインを切り替え",
+    "zh-Hans": "切换 Claude 登录", "zh-Hant": "切換 Claude 登入",
+    "es": "Cambiar de sesión de Claude",
+  ],
+  "Sign in to %@…": [
+    "ko": "%@ 로그인…", "ja": "%@ にログイン…",
+    "zh-Hans": "登录 %@…", "zh-Hant": "登入 %@…",
+    "es": "Iniciar sesión en %@…",
+  ],
+  "Sign in to a login": [
+    "ko": "로그인하기", "ja": "ログインする",
+    "zh-Hans": "登录某个账号", "zh-Hant": "登入某個帳號",
+    "es": "Iniciar sesión en una cuenta",
+  ],
+  "Claude Code was not found on this Mac": [
+    "ko": "이 Mac에서 Claude Code를 찾을 수 없습니다",
+    "ja": "このMacでClaude Codeが見つかりません",
+    "zh-Hans": "在这台 Mac 上找不到 Claude Code",
+    "zh-Hant": "在這台 Mac 上找不到 Claude Code",
+    "es": "No se encontró Claude Code en este Mac",
+  ],
+  "The sign-in command has been copied to the clipboard — run it in a terminal where the claude CLI is available.": [
+    "ko": "로그인 명령을 클립보드에 복사했습니다 — claude CLI를 쓸 수 있는 터미널에서 실행하세요.",
+    "ja": "ログインコマンドをクリップボードにコピーしました — claude CLIが使えるターミナルで実行してください。",
+    "zh-Hans": "登录命令已复制到剪贴板 — 请在可以使用 claude CLI 的终端中运行。",
+    "zh-Hant": "登入指令已複製到剪貼簿 — 請在可使用 claude CLI 的終端機中執行。",
+    "es": "El comando de inicio de sesión se copió al portapapeles: ejecútalo en una terminal donde esté disponible la CLI de claude.",
+  ],
+  "Sign in with the Codex app": [
+    "ko": "Codex 앱에서 로그인", "ja": "Codexアプリでログイン",
+    "zh-Hans": "在 Codex 应用中登录", "zh-Hant": "在 Codex App 中登入",
+    "es": "Iniciar sesión con la app de Codex",
+  ],
+  "Retry now": [
+    "ko": "지금 다시 시도", "ja": "今すぐ再試行",
+    "zh-Hans": "立即重试", "zh-Hant": "立即重試", "es": "Reintentar ahora",
+  ],
+  "Force retry now — may extend the limit": [
+    "ko": "강제로 다시 시도 — 제한이 길어질 수 있음",
+    "ja": "強制的に再試行 — 制限が延びる可能性があります",
+    "zh-Hans": "强制重试 — 可能延长限流时间",
+    "zh-Hant": "強制重試 — 可能延長限流時間",
+    "es": "Forzar reintento — puede alargar el límite",
+  ],
+  "Retry while rate limited?": [
+    "ko": "요청 제한 중에 다시 시도할까요?", "ja": "レート制限中に再試行しますか？",
+    "zh-Hans": "要在限流期间重试吗？", "zh-Hant": "要在限流期間重試嗎？",
+    "es": "¿Reintentar durante el límite?",
+  ],
+  "The server restarts its cooldown on every request made during a limit, so retrying now can keep the numbers stale for longer. Switching to another login is the safer fix.": [
+    "ko": "제한이 걸린 동안 요청을 보내면 서버가 대기 시간을 다시 시작하므로, 지금 재시도하면 오히려 더 오래 갱신되지 않을 수 있습니다. 다른 로그인으로 전환하는 편이 안전합니다.",
+    "ja": "制限中にリクエストを送るとサーバーが待機時間をリセットするため、今再試行すると更新されない時間がかえって長くなる可能性があります。別のログインに切り替える方が安全です。",
+    "zh-Hans": "限流期间的每次请求都会让服务器重新计时，现在重试可能让数据停滞更久。切换到其他登录更安全。",
+    "zh-Hant": "限流期間的每次請求都會讓伺服器重新計時，現在重試可能讓資料停滯更久。切換到其他登入更安全。",
+    "es": "El servidor reinicia su espera con cada petición hecha durante un límite, así que reintentar ahora puede dejar los datos desactualizados más tiempo. Cambiar de sesión es lo más seguro.",
+  ],
+  "Retry anyway": [
+    "ko": "그래도 재시도", "ja": "それでも再試行",
+    "zh-Hans": "仍然重试", "zh-Hant": "仍然重試", "es": "Reintentar igualmente",
+  ],
+  "Cancel": [
+    "ko": "취소", "ja": "キャンセル", "zh-Hans": "取消", "zh-Hant": "取消", "es": "Cancelar",
+  ],
   "this block  $%.2f · %@ tokens · $%@/h": [
     "ko": "이번 블록  $%.2f · %@ 토큰 · $%@/h",
     "ja": "現在のブロック  $%.2f · %@ tokens · $%@/h",

@@ -33,6 +33,13 @@ func findBin(_ name: String) -> String? {
   firstExisting(["\(HOME)/.bun/bin/\(name)", "/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"])
 }
 
+// Claude Code's own installer puts the CLI in ~/.local/bin, which findBin does not cover. The
+// sign-in script needs an absolute path: a .command file runs under a non-login shell, so the PATH
+// the user set up in their shell profile is not there to find a bare `claude`.
+func claudeCLIPath() -> String? {
+  firstExisting(["\(HOME)/.local/bin/claude"]) ?? findBin("claude")
+}
+
 // Opt-out switch for live queries (same as the widget: touch ~/.claude/swiftbar/.no-live)
 func liveDisabled() -> Bool { FileManager.default.fileExists(atPath: "\(STATE_DIR)/.no-live") }
 
@@ -126,7 +133,7 @@ func runCmd(_ bin: String, _ args: [String], timeout: TimeInterval = 10) -> Stri
 // A 429 answer carries "retry-after: <seconds>". Retrying on the fixed REFRESH_SECONDS timer
 // anyway keeps renewing the penalty, so the app can never climb back out — that is how four
 // straight days of stale Claude data happened. Cooldowns are keyed by host, so one throttled
-// provider never silences the other, and they live in memory only.
+// provider never silences the other, and they survive a relaunch (see rateLimitStorePath).
 let RATE_LIMIT_FALLBACK_SECONDS = 600 // a 429 with no usable header still has to back off
 
 // The hosts the usage fetchers call. Cooldowns are keyed by host, so these have to be the same
@@ -134,8 +141,29 @@ let RATE_LIMIT_FALLBACK_SECONDS = 600 // a 429 with no usable header still has t
 let CLAUDE_API_HOST = "api.anthropic.com"
 let CODEX_API_HOST = "chatgpt.com"
 
+// Cooldowns are persisted, not just remembered. Anthropic restarts its clock on every request made
+// during an active penalty, so an app that forgets its cooldown on relaunch re-arms the very
+// lockout it was waiting out — and quitting, logging in, or updating all count as a relaunch.
+var rateLimitStorePath = "\(STATE_DIR)/.rate-limits.json"
 private var rateLimitUntil: [String: Int] = [:]
+private var rateLimitLoaded = false
 private let rateLimitLock = NSLock()
+
+// Callers below already hold rateLimitLock.
+private func loadRateLimitsLocked() {
+  guard !rateLimitLoaded else { return }
+  rateLimitLoaded = true
+  guard let stored = jd(readJSONFile(rateLimitStorePath)) else { return }
+  for (host, value) in stored {
+    guard let until = jn(value).map({ Int($0) }) else { continue }
+    rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
+  }
+}
+
+private func saveRateLimitsLocked(now: Int) {
+  // Expired entries are dropped rather than carried forward forever.
+  writeJSONFile(rateLimitStorePath, rateLimitUntil.filter { $0.value > now })
+}
 
 // Retry-After as a plain seconds count. Anthropic sends that form; anything else (an HTTP date,
 // junk, or a non-positive value) means "we don't know", and the caller falls back.
@@ -148,32 +176,79 @@ func noteRateLimit(host: String, retryAfter: Int?, now: Int) {
   let until = now + (retryAfter ?? RATE_LIMIT_FALLBACK_SECONDS)
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
+  loadRateLimitsLocked()
   // Never shorten an active cooldown: a later 429 with a small Retry-After must not undo a long one.
   rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
+  saveRateLimitsLocked(now: now)
 }
 
 // Seconds still to wait, or nil when the host is free to call.
 func rateLimitRemaining(host: String, now: Int) -> Int? {
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
+  loadRateLimitsLocked()
   guard let until = rateLimitUntil[host], until > now else { return nil }
   return until - now
+}
+
+// Drops one bucket's cooldown. Only the user's explicit "force retry" calls this — the penalty is
+// the server's, so clearing it locally does not shorten it, it just permits one more request.
+func clearRateLimit(host: String, now: Int) {
+  rateLimitLock.lock()
+  defer { rateLimitLock.unlock() }
+  loadRateLimitsLocked()
+  rateLimitUntil.removeValue(forKey: host)
+  saveRateLimitsLocked(now: now)
 }
 
 func resetRateLimits() {
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
   rateLimitUntil.removeAll()
+  rateLimitLoaded = true // the store is gone too — nothing left to hydrate from
+  try? FileManager.default.removeItem(atPath: rateLimitStorePath)
+}
+
+// Drops the in-memory table so the next read comes off disk — what a relaunch does.
+func reloadRateLimitsFromDisk() {
+  rateLimitLock.lock()
+  defer { rateLimitLock.unlock() }
+  rateLimitUntil.removeAll()
+  rateLimitLoaded = false
+}
+
+// ── Last transport outcome ─────────────────────────────────────────────────
+// The fetchers collapse every failure into `nil`, which is why the stale row could only offer the
+// catch-all "check login/network". The status code is the one thing that separates an expired
+// login (401) from an unreachable server, and those need different fixes — so it is kept here.
+// Deliberately not persisted: a code from before a relaunch says nothing about the network now.
+private var lastHTTPStatusByBucket: [String: Int] = [:]
+private let httpStatusLock = NSLock()
+let HTTP_STATUS_TRANSPORT_ERROR = -1 // no HTTP response at all — DNS, offline, timeout
+
+func noteHTTPStatus(bucket: String, status: Int) {
+  httpStatusLock.lock()
+  defer { httpStatusLock.unlock() }
+  lastHTTPStatusByBucket[bucket] = status
+}
+
+// nil when this bucket has not been called yet this run.
+func lastHTTPStatus(bucket: String) -> Int? {
+  httpStatusLock.lock()
+  defer { httpStatusLock.unlock() }
+  return lastHTTPStatusByBucket[bucket]
 }
 
 // Synchronous HTTP GET (only 2xx counts as success) — token stays in headers only, never in files/process args
 // If CCB_DEBUG=1, prints status/errors to stderr (for diagnostics)
 var providerActivityHandler: ((Provider, Bool) -> Void)?
 
+// `bucket` is the cooldown key, defaulting to the host. Callers whose throttle is scoped narrower
+// than the host — Claude's is per login, not per server — pass their own key.
 func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval = 8,
-             provider: Provider? = nil) -> Data? {
+             provider: Provider? = nil, bucket: String? = nil) -> Data? {
   guard let url = URL(string: urlStr) else { return nil }
-  let host = url.host ?? urlStr
+  let host = bucket ?? url.host ?? urlStr
   // Still serving a 429 penalty — don't spend the request, and don't renew the penalty.
   if let wait = rateLimitRemaining(host: host, now: Int(Date().timeIntervalSince1970)) {
     if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
@@ -188,7 +263,8 @@ func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval 
   if let provider { providerActivityHandler?(provider, true) }
   URLSession.shared.dataTask(with: req) { d, r, e in
     let response = r as? HTTPURLResponse
-    let code = response?.statusCode ?? -1
+    let code = response?.statusCode ?? HTTP_STATUS_TRANSPORT_ERROR
+    noteHTTPStatus(bucket: host, status: code)
     if (200 ..< 300).contains(code) { result = d }
     if code == 429 {
       let header = response?.value(forHTTPHeaderField: "Retry-After")

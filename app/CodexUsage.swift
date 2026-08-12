@@ -40,6 +40,11 @@ private func readCodexToken() -> (token: String, account: String)? {
   return (t, jstr(jd(d["tokens"])?["account_id"]) ?? "")
 }
 
+// Presence of a usable login, without reading the token — see claudeCredentialsPresent.
+func codexCredentialsPresent() -> Bool {
+  jstr(jd(jd(readJSONFile(CODEX_AUTH))?["tokens"])?["access_token"]) != nil
+}
+
 private func parseWindow(_ a: Any?, resetKey: String) -> CodexWindow? {
   guard let w = jd(a) else { return nil }
   return CodexWindow(usedPercent: jn(w["used_percent"]) ?? 0, resetsAt: resetTs(w[resetKey]))
