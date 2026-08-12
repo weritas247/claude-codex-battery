@@ -277,8 +277,12 @@ func restoredTabIndex(_ index: Int, count: Int) -> Int {
   return index
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
   var statusItem: NSStatusItem?
+  private var hoverMonitors: [Any] = []
+  private var cursorInsideStatusItem = false
+  private var menuIsOpen = false
+  private var menuOpenedByHover = false
   var timer: Timer?
   var glintTimer: VisualTimerResource?
   var catTimer: VisualTimerResource?
@@ -384,6 +388,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     statusItem?.button?.title = "…"
+    startHoverMonitors()
     providerActivityHandler = { [weak self] provider, active in
       DispatchQueue.main.async {
         guard let self else { return }
@@ -831,6 +836,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   private func applyMenu(_ menu: NSMenu) {
+    // Reassigned on every refresh, so the open/close tracking has to be attached to each new menu.
+    menu.delegate = self
     if let menuSink { menuSink(menu) } else { statusItem?.menu = menu }
   }
 
@@ -883,6 +890,83 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       playFrames(frames, interval: interval)
     }
   }
+
+  // ── Hover to open ────────────────────────────────────────────────────────
+  // NSStatusBarButton is created by the system, so it cannot be subclassed to receive
+  // mouseEntered:, and a tracking area would deliver to that button rather than here. A
+  // mouse-moved monitor is the way in — global for when the app is in the background (the normal
+  // case for a menu bar app), local for while its own menu is up.
+  func startHoverMonitors() {
+    guard hoverMonitors.isEmpty else { return }
+    if let global = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+      self?.handleHoverMove()
+    } { hoverMonitors.append(global) }
+    if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+      self?.handleHoverMove()
+      return event
+    } { hoverMonitors.append(local) }
+  }
+
+  private func statusItemScreenFrame() -> NSRect {
+    guard let button = statusItem?.button, let window = button.window else { return .zero }
+    return window.convertToScreen(button.convert(button.bounds, to: nil))
+  }
+
+  // The open menu's own window, so leaving the item but entering the menu does not count as
+  // leaving. AppKit exposes no handle to it, hence the class-name probe — and when it finds
+  // nothing the caller treats the zone as unknown and leaves the menu alone.
+  private func openMenuFrame() -> NSRect {
+    var union = NSRect.zero
+    for window in NSApp.windows where window.isVisible
+      && String(describing: type(of: window)).contains("Menu") {
+      union = union.isEmpty ? window.frame : union.union(window.frame)
+    }
+    return union
+  }
+
+  func hoverHotZone() -> NSRect {
+    let menu = openMenuFrame()
+    guard !menu.isEmpty else { return .zero }
+    let button = statusItemScreenFrame()
+    return button.isEmpty ? menu : button.union(menu)
+  }
+
+  func handleHoverMove() {
+    let mouse = NSEvent.mouseLocation
+    // Handled before the menu-bar band test below, because an open menu extends well past it and
+    // the pointer travelling down over the menu must not read as having left.
+    if menuIsOpen {
+      guard shouldCloseOnExit(mouse: mouse, hotZone: hoverHotZone(),
+                              openedByHover: menuOpenedByHover) else { return }
+      statusItem?.menu?.cancelTracking()
+      return
+    }
+    // Rejected before any AppKit geometry: this runs for every mouse move on the whole machine.
+    let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+    guard let screen, mouse.y >= screen.frame.maxY - HOVER_MENU_BAR_BAND else {
+      cursorInsideStatusItem = false
+      return
+    }
+    let frame = statusItemScreenFrame()
+    let inside = !frame.isEmpty && frame.contains(mouse)
+    // Transitions only — logging every move would bury the rest of the debug output, since this
+    // runs for each mouse-moved event that reaches the menu bar band.
+    if inside != cursorInsideStatusItem, ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
+      FileHandle.standardError.write(Data(
+        "[hover] \(inside ? "enter" : "leave") mouse=\(mouse) frame=\(frame) open=\(menuIsOpen)\n".utf8))
+    }
+    defer { cursorInsideStatusItem = inside }
+    guard shouldOpenOnHover(mouse: mouse, buttonFrame: frame, enabled: hoverOpenEnabled(),
+                            menuOpen: menuIsOpen, alreadyInside: cursorInsideStatusItem)
+    else { return }
+    // performClick runs the menu's own tracking loop, so this does not return until it closes —
+    // the flag has to be set first, because the close logic runs inside that loop.
+    menuOpenedByHover = true
+    statusItem?.button?.performClick(nil)
+  }
+
+  func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+  func menuDidClose(_ menu: NSMenu) { menuIsOpen = false; menuOpenedByHover = false }
 
   private func applyProductionPostRender() {
     guard statusItem != nil else { return }
@@ -1030,6 +1114,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let langCodes = ["auto"] + LANG_DISPLAY.map { $0.code }; let langTitles = [tr("System default")] + LANG_DISPLAY.map { $0.name }; let savedLang = UserDefaults.standard.string(forKey: "uiLang") ?? "auto"
     let generalGrid = NSGridView(views: [[NSTextField(labelWithString: tr("Language")), popup(langTitles, selected: langCodes.firstIndex(of: savedLang) ?? 0, action: #selector(settingsLanguageChanged(_:)))]]); generalGrid.rowSpacing = 12; generalGrid.columnSpacing = 24; general.addArrangedSubview(generalGrid)
     if #available(macOS 13.0, *) { let login = NSButton(checkboxWithTitle: tr("Start at login"), target: self, action: #selector(toggleLoginItem)); login.state = loginItemEnabled ? .on : .off; general.addArrangedSubview(login) }
+    let hoverToggle = NSButton(checkboxWithTitle: tr("Open the menu on hover"), target: self,
+                               action: #selector(toggleMetric(_:)))
+    hoverToggle.identifier = NSUserInterfaceItemIdentifier(HOVER_OPEN_KEY)
+    hoverToggle.state = hoverOpenEnabled() ? .on : .off
+    general.addArrangedSubview(hoverToggle)
     // Only worth showing when there is something to switch to.
     let profiles = discoverClaudeProfiles()
     if profiles.count > 1 {
@@ -3007,6 +3096,68 @@ private func runCoreSelfTest() throws {
               "stale-recovery", "menu-live-has-no-flow",
               "a live row carried a recovery submenu for a problem it does not have")
   print("self-test-core: stale-recovery PASS")
+
+  // ── hover-open ───────────────────────────────────────────────────────────
+  let itemFrame = NSRect(x: 1_000, y: 940, width: 120, height: 24)
+  let over = NSPoint(x: 1_060, y: 950)
+  let away = NSPoint(x: 400, y: 500)
+  try require(shouldOpenOnHover(mouse: over, buttonFrame: itemFrame, enabled: true,
+                                menuOpen: false, alreadyInside: false),
+              "hover-open", "opens-on-entry", "entering the status item did not open the menu")
+  try require(!shouldOpenOnHover(mouse: away, buttonFrame: itemFrame, enabled: true,
+                                 menuOpen: false, alreadyInside: false),
+              "hover-open", "ignores-elsewhere", "a pointer nowhere near the item opened the menu")
+  // The re-entry rule. Without it a menu dismissed under a stationary pointer reopens on the very
+  // next mouse move, and the item becomes impossible to close.
+  try require(!shouldOpenOnHover(mouse: over, buttonFrame: itemFrame, enabled: true,
+                                 menuOpen: false, alreadyInside: true),
+              "hover-open", "no-reopen-while-parked",
+              "the menu reopened under a pointer that never left the item")
+  try require(!shouldOpenOnHover(mouse: over, buttonFrame: itemFrame, enabled: true,
+                                 menuOpen: true, alreadyInside: false),
+              "hover-open", "not-while-open", "hover fired again while the menu was already up")
+  try require(!shouldOpenOnHover(mouse: over, buttonFrame: itemFrame, enabled: false,
+                                 menuOpen: false, alreadyInside: false),
+              "hover-open", "respects-setting", "hover opened the menu with the setting off")
+  // A hidden or overflowed status item reports an empty frame, which contains every point.
+  try require(!shouldOpenOnHover(mouse: over, buttonFrame: .zero, enabled: true,
+                                 menuOpen: false, alreadyInside: false),
+              "hover-open", "ignores-empty-frame",
+              "an item with no on-screen frame still claimed the pointer")
+  try require(hoverOpenEnabled(nil) == true
+                && hoverOpenEnabled(false) == false && hoverOpenEnabled(true) == true,
+              "hover-open", "default-on", "the hover setting did not default to on")
+
+  // Closing again on exit. The hot zone spans the status item and the menu hanging off it, so
+  // travelling down onto the menu must not read as leaving.
+  let menuFrame = NSRect(x: 900, y: 600, width: 596, height: 340)
+  let hotZone = itemFrame.union(menuFrame)
+  try require(!shouldCloseOnExit(mouse: NSPoint(x: 1_060, y: 700), hotZone: hotZone,
+                                 openedByHover: true),
+              "hover-open", "stays-open-over-menu",
+              "moving onto the menu itself was treated as leaving it")
+  try require(!shouldCloseOnExit(mouse: over, hotZone: hotZone, openedByHover: true),
+              "hover-open", "stays-open-over-item",
+              "resting on the status item closed the menu it had just opened")
+  try require(shouldCloseOnExit(mouse: NSPoint(x: 300, y: 300), hotZone: hotZone,
+                                openedByHover: true),
+              "hover-open", "closes-on-exit", "leaving the menu did not close it")
+  // A menu the user clicked open is theirs to dismiss; only the one hover opened closes itself.
+  try require(!shouldCloseOnExit(mouse: NSPoint(x: 300, y: 300), hotZone: hotZone,
+                                 openedByHover: false),
+              "hover-open", "click-opened-stays",
+              "a menu the user clicked open closed itself when the pointer wandered off")
+  // Unknown geometry must never trigger a close — better a menu that lingers than one that bolts.
+  try require(!shouldCloseOnExit(mouse: NSPoint(x: 300, y: 300), hotZone: .zero,
+                                 openedByHover: true),
+              "hover-open", "unknown-zone-stays",
+              "the menu closed on a guess when its own window could not be located")
+  // The seam between item and menu is a hairline gap in the union; slack keeps it crossable.
+  try require(!shouldCloseOnExit(mouse: NSPoint(x: itemFrame.minX - 4, y: itemFrame.minY - 4),
+                                 hotZone: itemFrame, openedByHover: true),
+              "hover-open", "tolerance-at-seam",
+              "a pointer a few points off the edge closed the menu mid-traverse")
+  print("self-test-core: hover-open PASS")
 
   print("self-test-core: PASS")
 }

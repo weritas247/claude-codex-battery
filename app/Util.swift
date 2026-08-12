@@ -43,6 +43,41 @@ func claudeCLIPath() -> String? {
 // Opt-out switch for live queries (same as the widget: touch ~/.claude/swiftbar/.no-live)
 func liveDisabled() -> Bool { FileManager.default.fileExists(atPath: "\(STATE_DIR)/.no-live") }
 
+// ── Hover to open ──────────────────────────────────────────────────────────
+let HOVER_OPEN_KEY = "openMenuOnHover"
+
+func hoverOpenEnabled(_ stored: Any? = UserDefaults.standard.object(forKey: HOVER_OPEN_KEY)) -> Bool {
+  (stored as? Bool) ?? true
+}
+
+// Cheap reject band, in points below the top of the screen. Mouse-moved arrives for every pixel of
+// every drag anywhere on the Mac, so anything not already near the menu bar is dismissed before
+// touching AppKit geometry.
+let HOVER_MENU_BAR_BAND: CGFloat = 40
+
+// Pure so the entry/re-entry rule can be asserted without a cursor. `alreadyInside` is what stops a
+// menu the user just dismissed from springing straight back open under a stationary pointer: it
+// only opens on the transition into the item, never while the pointer sits there.
+func shouldOpenOnHover(mouse: NSPoint, buttonFrame: NSRect, enabled: Bool,
+                       menuOpen: Bool, alreadyInside: Bool) -> Bool {
+  guard enabled, !menuOpen, !alreadyInside, !buttonFrame.isEmpty else { return false }
+  return buttonFrame.contains(mouse)
+}
+
+// Slack around the hot zone, in points. The pointer has to cross the seam between the status item
+// and the menu hanging off it, and a rect union leaves hairline gaps there — closing on those
+// would make the menu impossible to reach.
+let HOVER_EXIT_TOLERANCE: CGFloat = 8
+
+// A menu the pointer opened should close when the pointer leaves, but only that menu: one the user
+// deliberately clicked open stays until they dismiss it. An empty hot zone means the menu's own
+// window could not be located, and closing on a guess would yank the menu out from under them.
+func shouldCloseOnExit(mouse: NSPoint, hotZone: NSRect, openedByHover: Bool,
+                       tolerance: CGFloat = HOVER_EXIT_TOLERANCE) -> Bool {
+  guard openedByHover, !hotZone.isEmpty else { return false }
+  return !hotZone.insetBy(dx: -tolerance, dy: -tolerance).contains(mouse)
+}
+
 
 func fmtDur(_ secs: Int) -> String {
   if secs <= 0 { return "0m" }

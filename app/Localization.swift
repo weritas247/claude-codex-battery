@@ -141,6 +141,11 @@ private let TR: [String: [String: String]] = [
     "zh-Hans": "登录 %@…", "zh-Hant": "登入 %@…",
     "es": "Iniciar sesión en %@…",
   ],
+  "Open the menu on hover": [
+    "ko": "마우스를 올리면 메뉴 열기", "ja": "ホバーでメニューを開く",
+    "zh-Hans": "悬停即打开菜单", "zh-Hant": "滑鼠移過即開啟選單",
+    "es": "Abrir el menú al pasar el cursor",
+  ],
   "Sign in to a login": [
     "ko": "로그인하기", "ja": "ログインする",
     "zh-Hans": "登录某个账号", "zh-Hant": "登入某個帳號",
