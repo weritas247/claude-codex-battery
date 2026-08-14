@@ -319,12 +319,33 @@ private let TR: [String: [String: String]] = [
     "ko": "배터리 크기", "ja": "バッテリーサイズ", "zh-Hans": "电池大小", "zh-Hant": "電池大小",
     "es": "Tamaño de batería",
   ],
+  "Battery orientation": [
+    "ko": "배터리 방향", "ja": "バッテリーの向き", "zh-Hans": "电池方向", "zh-Hant": "電池方向",
+    "es": "Orientación de la batería",
+  ],
+  "Vertical": [
+    "ko": "세로형", "ja": "縦型", "zh-Hans": "纵向", "zh-Hant": "直向", "es": "En vertical",
+  ],
+  "Horizontal": [
+    "ko": "가로형", "ja": "横型", "zh-Hans": "横向", "zh-Hant": "橫向", "es": "En horizontal",
+  ],
+  "Text size": [
+    "ko": "텍스트 크기", "ja": "文字サイズ", "zh-Hans": "文字大小", "zh-Hant": "文字大小",
+    "es": "Tamaño del texto",
+  ],
   "Battery size and Cat apply to pixel batteries only.": [
     "ko": "배터리 크기와 고양이는 픽셀 배터리에서만 적용됩니다.",
     "ja": "バッテリーサイズと猫はピクセルバッテリーのみに適用されます。",
     "zh-Hans": "电池大小和猫仅适用于像素电池。",
     "zh-Hant": "電池大小與貓僅適用於像素電池。",
     "es": "El tamaño de la batería y el gato solo se aplican a las baterías pixel.",
+  ],
+  "Battery orientation and Text size apply to modern batteries only.": [
+    "ko": "배터리 방향과 텍스트 크기는 일반 배터리 UI에서만 적용됩니다.",
+    "ja": "バッテリーの向きと文字サイズは標準バッテリーUIのみに適用されます。",
+    "zh-Hans": "电池方向和文字大小仅适用于标准电池界面。",
+    "zh-Hant": "電池方向與文字大小僅適用於標準電池介面。",
+    "es": "La orientación y el tamaño del texto solo se aplican a las baterías modernas.",
   ],
   "Display style": [
     "ko": "표시 방식", "ja": "表示形式", "zh-Hans": "显示样式", "zh-Hant": "顯示樣式",

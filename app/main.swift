@@ -129,6 +129,118 @@ func providerSummaries(_ snap: Snapshot,
   return summaries
 }
 
+private final class DeterministicModernFixtureAssetResolver: ProviderAssetResolving {
+  func installedApp(for provider: Provider) -> URL? { nil }
+  func providerImage(for provider: Provider, installedApp: URL?) -> NSImage? { nil }
+  func applicationImage(for provider: Provider, installedApp: URL?) -> NSImage? { nil }
+}
+
+struct DeterministicModernFixture {
+  let snapshot: Snapshot
+  let configuration: PresentationConfiguration
+  let assets: ProviderAssetContext
+  let activeProviders: Set<Provider>
+}
+
+private func deterministicModernFixture(activeProviders: Set<Provider> = []) -> DeterministicModernFixture {
+  let now = 2_000_000_000
+  let usage = ClaudeUsage(measuredAt: now, live: true,
+                          fiveHour: UsageWindow(pct: 21, resetsAt: now + 3_600),
+                          weekly: nil, fable: nil)
+  let codex = CodexUsage(measuredAt: now, live: true, limitId: nil, plan: "plus",
+                         primary: CodexWindow(usedPercent: 38, resetsAt: now + 3_600),
+                         secondary: nil, credits: nil)
+  let configuration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, batteryGreen: { nil })
+  let snapshot = Snapshot(now: now, usage: usage, block: nil, models: nil, codex: codex,
+                          update: (nil, false))
+  return DeterministicModernFixture(
+    snapshot: snapshot, configuration: configuration,
+    assets: ProviderAssetContext(resolver: DeterministicModernFixtureAssetResolver()),
+    activeProviders: activeProviders)
+}
+
+private func renderDeterministicModernFixture() -> NSImage? {
+  let fixture = deterministicModernFixture()
+  return renderModernSummaryImage(
+    dark: true, summaries: providerSummaries(fixture.snapshot, configuration: fixture.configuration),
+    assetContext: fixture.assets, configuration: fixture.configuration)
+}
+
+private func deterministicModernFixturePNG(_ image: NSImage?) -> NSBitmapImageRep? {
+  guard let image else { return nil }
+  let width = Int((image.size.width * 2).rounded())
+  let height = Int((image.size.height * 2).rounded())
+  guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                      isPlanar: false, colorSpaceName: .deviceRGB,
+                                      bitmapFormat: .alphaFirst, bytesPerRow: 0, bitsPerPixel: 0)
+  else { return nil }
+  bitmap.size = image.size
+  NSGraphicsContext.saveGraphicsState()
+  NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+  image.draw(in: NSRect(origin: .zero, size: image.size))
+  NSGraphicsContext.restoreGraphicsState()
+  return bitmap
+}
+
+private enum DeterministicModernFixtureWriteError: Error, CustomStringConvertible {
+  case relativePath
+  case missingParent
+  case unwritableParent
+  case renderingFailed
+  case pngEncodingFailed
+
+  var description: String {
+    switch self {
+    case .relativePath: return "output path must be absolute"
+    case .missingParent: return "output parent directory does not exist"
+    case .unwritableParent: return "output parent directory is not writable"
+    case .renderingFailed: return "failed to render deterministic modern fixture"
+    case .pngEncodingFailed: return "failed to encode deterministic modern fixture PNG"
+    }
+  }
+}
+
+private func writeDeterministicModernFixturePNG(to path: String) throws {
+  guard (path as NSString).isAbsolutePath else { throw DeterministicModernFixtureWriteError.relativePath }
+  let output = URL(fileURLWithPath: path)
+  let parent = output.deletingLastPathComponent()
+  var isDirectory: ObjCBool = false
+  guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue
+  else { throw DeterministicModernFixtureWriteError.missingParent }
+  guard FileManager.default.isWritableFile(atPath: parent.path)
+  else { throw DeterministicModernFixtureWriteError.unwritableParent }
+  guard let bitmap = deterministicModernFixturePNG(renderDeterministicModernFixture())
+  else { throw DeterministicModernFixtureWriteError.renderingFailed }
+  guard let png = bitmap.representation(using: .png, properties: [:])
+  else { throw DeterministicModernFixtureWriteError.pngEncodingFailed }
+  try png.write(to: output, options: .atomic)
+}
+
+private func requestedPreviewModernFixture() -> DeterministicModernFixture? {
+  guard CommandLine.arguments.contains("--preview-modern") else { return nil }
+  let activeIndexes = CommandLine.arguments.indices.filter { CommandLine.arguments[$0] == "--active" }
+  guard activeIndexes.count <= 1 else {
+    FileHandle.standardError.write(Data("preview-modern: --active may appear once\n".utf8))
+    exit(2)
+  }
+  guard let activeIndex = activeIndexes.first else { return deterministicModernFixture() }
+  guard activeIndex + 1 < CommandLine.arguments.count,
+        CommandLine.arguments[activeIndex + 1] == "claude"
+  else {
+    FileHandle.standardError.write(Data("preview-modern: only --active claude is supported\n".utf8))
+    exit(2)
+  }
+  return deterministicModernFixture(activeProviders: [.claude])
+}
+
+private func shouldSuppressDuplicateLaunch(previewRequested: Bool) -> Bool {
+  !previewRequested
+}
+
 // Cat state from the snapshot: low remaining with a distant reset → panic
 // (CCB_CAT_TEST=sleep|walk|run|dash|panic forces a state for testing)
 func catState(_ snap: Snapshot, configuration: PresentationConfiguration = .production) -> CatState {
@@ -268,8 +380,8 @@ enum RefreshTrigger: Equatable {
   case manual
 }
 
-// The modern renderer reads neither batterySize nor catStyle, so those controls only apply to pixel mode.
 func pixelOnlyControlsEnabled(_ displayMode: String) -> Bool { displayMode == "pixel" }
+func modernOnlyControlsEnabled(_ displayMode: String) -> Bool { displayMode == "modern" }
 
 // AppKit returns NSNotFound when no tab is selected, and a rebuilt tab view may have fewer items.
 func restoredTabIndex(_ index: Int, count: Int) -> Int {
@@ -302,6 +414,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
   var settingsSizePopup: NSPopUpButton?
   var settingsCatPopup: NSPopUpButton?
   var settingsPixelOnlyNote: NSTextField?
+  var settingsOrientationPopup: NSPopUpButton?
+  var settingsTextScaleSlider: NSSlider?
+  var settingsTextScaleValue: NSTextField?
+  var settingsModernOnlyNote: NSTextField?
   // Parallel to the profile popup's items — the popup shows names, this keeps the full paths.
   var settingsProfiles: [String] = []
   var colorSheet: NSWindow?
@@ -317,6 +433,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
   private let glintIntervalReader: () -> TimeInterval
   private let visualTimerFactory: VisualTimerFactory
   private let allowsHeadlessVisualResources: Bool
+  private let previewFixture: DeterministicModernFixture?
   private let motionNotificationCenter: NotificationCenter
   private var motionObserver: NSObjectProtocol?
   private(set) var reduceMotionEnabled = false
@@ -355,6 +472,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
        motionNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
        visualTimerFactory: @escaping VisualTimerFactory = scheduledVisualTimer,
        allowsHeadlessVisualResources: Bool = false,
+       previewFixture: DeterministicModernFixture? = nil,
        providerMonitorIdentity: AnyObject? = nil) {
     self.presentationConfiguration = presentationConfiguration
     self.collector = collector
@@ -365,6 +483,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     self.glintIntervalReader = glintIntervalReader
     self.visualTimerFactory = visualTimerFactory
     self.allowsHeadlessVisualResources = allowsHeadlessVisualResources
+    self.previewFixture = previewFixture
     self.motionNotificationCenter = motionNotificationCenter
     self.providerMonitorIdentity = providerMonitorIdentity
     super.init()
@@ -388,6 +507,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     statusItem?.button?.title = "…"
+    if let previewFixture {
+      installPreviewModernFixture(previewFixture)
+      return
+    }
     startHoverMonitors()
     providerActivityHandler = { [weak self] provider, active in
       DispatchQueue.main.async {
@@ -415,6 +538,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
       self?.requestRefresh(.timer)
     }
     if !reduceMotionEnabled { startGlintTimer() }
+  }
+
+  private func installPreviewModernFixture(_ fixture: DeterministicModernFixture) {
+    statusItem?.button?.appearance = NSAppearance(named: .darkAqua)
+    lastSnap = fixture.snapshot
+    guard let image = renderModernSummaryImage(
+      dark: true,
+      summaries: providerSummaries(fixture.snapshot, configuration: fixture.configuration),
+      assetContext: fixture.assets,
+      configuration: fixture.configuration)
+    else {
+      statusItem?.button?.title = "fixture render failed"
+      return
+    }
+    setButtonImage(image)
+    apiActiveProviders = fixture.activeProviders
+    updateActivityAnimation()
   }
 
   private func startGlintTimer() {
@@ -494,14 +634,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     let button = statusItem?.button
     button?.wantsLayer = true
     let summaries = providerSummaries(snap, configuration: presentationConfiguration)
-    let imageWidth = button?.image?.size.width ?? 0
-    let imageHeight = button?.image?.size.height ?? MODERN_IMAGE_HEIGHT
+    let orientation = presentationConfiguration.modernBatteryOrientation()
+    let textScale = normalizedModernTextScale(presentationConfiguration.modernTextScale())
+    let geometry = ModernBatteryGeometry(
+      values: summaries.map { normalizedRemaining($0.remain) },
+      orientation: orientation, textScale: textScale)
+    let imageWidth = button?.image?.size.width ?? geometry.imageSize.width
+    let imageHeight = button?.image?.size.height ?? geometry.imageSize.height
     let buttonWidth = button?.bounds.width ?? imageWidth
     let buttonHeight = button?.bounds.height ?? imageHeight
     let originX = max(0, (buttonWidth - imageWidth) / 2)
     let originY = hatchOriginY(buttonHeight: buttonHeight, imageHeight: imageHeight)
     // Same fallback as prepareAndApplyCurrent: no button → light, so the hatch matches the base image
     let dark = button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+
+    func applyTextClearanceMask(to clip: CALayer, labelFrame: CGRect) {
+      let localLabelFrame = labelFrame
+        .offsetBy(dx: -clip.frame.minX, dy: -clip.frame.minY)
+        .insetBy(dx: -0.75, dy: -0.5)
+        .intersection(clip.bounds)
+      let path = CGMutablePath()
+      path.addRect(clip.bounds)
+      if !localLabelFrame.isNull && !localLabelFrame.isEmpty {
+        path.addRect(localLabelFrame)
+      }
+      let mask = (clip.mask as? CAShapeLayer) ?? CAShapeLayer()
+      mask.frame = clip.bounds
+      mask.path = path
+      mask.fillRule = .evenOdd
+      mask.fillColor = NSColor.white.cgColor
+      clip.mask = mask
+    }
+
+    func stripeFrame(for rect: CGRect) -> CGRect {
+      if orientation == .horizontal {
+        return CGRect(x: 0, y: 0, width: rect.width + HATCH_PITCH_PT, height: rect.height)
+      }
+      return CGRect(x: 0, y: -HATCH_PITCH_PT,
+                    width: rect.width, height: rect.height + HATCH_PITCH_PT)
+    }
 
     for provider in [Provider.claude, .codex] {
       guard activeProviders.contains(provider),
@@ -510,47 +681,48 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         continue
       }
       let summary = summaries[index]
-      let itemX = originX + MODERN_IMAGE_PAD + CGFloat(index) * (MODERN_ITEM_WIDTH + MODERN_ITEM_GAP)
-      let bodyX = itemX + MODERN_ICON_WIDTH + MODERN_ICON_GAP
-      let fillW = max(0, (MODERN_BODY_WIDTH - 4) * normalizedRemaining(summary.remain) / 100)
-      // Too little fill to carry the stripes → run them over the whole body so activity stays visible
-      let wide = fillW >= HATCH_MIN_FILL_PT
-      let rect = CGRect(x: bodyX + 2, y: originY + 5,
-                        width: wide ? fillW : MODERN_BODY_WIDTH - 4, height: 14)
-      let colorRGB = wide ? activityHatchRGB(summary.remain, dark: dark,
-                                             custom: presentationConfiguration.batteryGreen())
-                          : emptyHatchRGB(dark: dark)
-      let alpha: CGFloat = wide ? 0.85 : 0.55
+      let fill = geometry.fillFrame(at: index, remaining: normalizedRemaining(summary.remain))
+        .offsetBy(dx: originX, dy: originY)
+      guard fill.height > 0 else {
+        removeActivityLayers(for: provider)
+        continue
+      }
+      let rect = fill
+      let colorRGB = activityHatchRGB(summary.remain, dark: dark,
+                                      custom: presentationConfiguration.batteryGreen())
+      let alpha: CGFloat = 0.85
       // Rebuild key = exactly what the stripe tile is baked from. Everything else about a refresh —
       // a narrower fill, a new percentage — is a resize we can apply in place, and must: rebuilding
       // resets "drain" to t=0, and a draining provider changes its fill on every refresh, which is
       // precisely when the animation is on screen.
-      let rebuildKey = "\(colorRGB)|\(alpha)"
-      let stripesW = rect.width + HATCH_PITCH_PT
+      let rebuildKey = "\(orientation.rawValue)|\(colorRGB)|\(alpha)"
       // Origin centers the glyphs the way renderModernSummaryImage centers them, so the redraw lands
       // pixel-on-pixel; the size is the raster's, so .resize gravity doesn't squeeze them.
       func valueTextFrame(_ text: (image: CGImage, size: CGSize, rasterSize: CGSize)) -> CGRect {
-        CGRect(x: bodyX + (MODERN_BODY_WIDTH - text.size.width) / 2, y: originY + 5,
+        let origin = geometry.textOrigin(at: index, textSize: text.size)
+        return CGRect(x: originX + origin.x, y: originY + origin.y,
                width: text.rasterSize.width, height: text.rasterSize.height)
       }
-      let text = modernValueTextImage(normalizedRemaining(summary.remain), dark: dark)
+      let text = modernValueTextImage(
+        normalizedRemaining(summary.remain), dark: dark,
+        orientation: orientation, textScale: textScale)
       if let clip = activityLayers[provider], clip.name == rebuildKey,
          let stripes = clip.sublayers?.first, let label = activityTextLayers[provider] {
         CATransaction.begin()
         CATransaction.setDisableActions(true)   // implicit actions would slide the resize and crossfade the digits
         if clip.frame != rect {
           clip.frame = rect
-          // stripes sits on a left anchor, so its position.x stays 0 and the running drift's
-          // absolute from/to values survive the resize
-          stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
-          stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+          stripes.frame = stripeFrame(for: rect)
+          stripes.contents = hatchStripeImage(width: stripes.frame.width, height: stripes.frame.height,
                                               color: hatchNSColor(colorRGB, alpha: alpha))
         }
         // Baked from the value, so it goes stale even when the geometry doesn't move (below the
         // low-fill threshold the rect is constant for every remaining value in the band)
         if let text {
-          label.frame = valueTextFrame(text)
+          let labelFrame = valueTextFrame(text)
+          label.frame = labelFrame
           label.contents = text.image
+          applyTextClearanceMask(to: clip, labelFrame: labelFrame)
         }
         CATransaction.commit()
         continue
@@ -566,29 +738,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
       clip.masksToBounds = true
       clip.cornerRadius = 2.5
       let stripes = CALayer()
-      stripes.anchorPoint = CGPoint(x: 0, y: 0.5)   // see the resize path above
-      stripes.frame = CGRect(x: 0, y: 0, width: stripesW, height: rect.height)
+      stripes.anchorPoint = CGPoint(x: 0, y: 0)
+      stripes.frame = stripeFrame(for: rect)
       stripes.contentsScale = 2
-      stripes.contents = hatchStripeImage(width: stripesW, height: rect.height,
+      stripes.contents = hatchStripeImage(width: stripes.frame.width, height: stripes.frame.height,
                                           color: hatchNSColor(colorRGB, alpha: alpha))
       clip.addSublayer(stripes)
       button?.layer?.addSublayer(clip)
       activityLayers[provider] = clip
 
-      let drift = CABasicAnimation(keyPath: "position.x")
-      drift.fromValue = stripes.position.x
-      drift.toValue = stripes.position.x - HATCH_PITCH_PT
+      let hatchMotion = modernHatchMotion(orientation: orientation)
+      let startPosition = orientation == .vertical ? stripes.position.y : stripes.position.x
+      let drift = CABasicAnimation(keyPath: hatchMotion.keyPath)
+      drift.fromValue = startPosition
+      drift.toValue = startPosition + hatchMotion.delta
       drift.duration = HATCH_PERIOD
       drift.repeatCount = .infinity
       drift.isRemovedOnCompletion = false
       stripes.add(drift, forKey: "drain")
 
-      // The clip sits above the button image and would stripe the centered "NN%", so the number is
+      // The clip sits above the button image and would stripe the centered value, so the number is
       // redrawn on top of it.
       let label = CALayer()
       label.frame = valueTextFrame(text)
       label.contentsScale = 2
       label.contents = text.image
+      applyTextClearanceMask(to: clip, labelFrame: label.frame)
       button?.layer?.addSublayer(label)
       activityTextLayers[provider] = label
     }
@@ -1136,9 +1311,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     heading(display, tr("Appearance")); note(display, tr("Choose the visual style and optional companion shown in the menu bar.")); separator(display)
     let sizePopup = popup([tr("Big"), tr("Small")], selected: currentBattSize() == "big" ? 0 : 1, action: #selector(settingsSizeChanged(_:)))
     let catPopup = popup([tr("Off"), tr("Wide face"), tr("Slim face"), tr("Slime")], selected: [CatStyle.none, .nyan, .slim, .slime].firstIndex(of: currentCatStyle()) ?? 0, action: #selector(settingsCatChanged(_:)))
+    let orientationPopup = popup(
+      [tr("Vertical"), tr("Horizontal")],
+      selected: currentModernBatteryOrientation() == .vertical ? 0 : 1,
+      action: #selector(settingsOrientationChanged(_:)))
+    orientationPopup.identifier = NSUserInterfaceItemIdentifier("modernBatteryOrientation")
+    let textScale = currentModernTextScale()
+    let textScaleSlider = NSSlider(
+      value: textScale, minValue: 0.8, maxValue: 1.3,
+      target: self, action: #selector(settingsTextScaleChanged(_:)))
+    textScaleSlider.identifier = NSUserInterfaceItemIdentifier("modernTextScale")
+    textScaleSlider.numberOfTickMarks = 11
+    textScaleSlider.allowsTickMarkValuesOnly = true
+    textScaleSlider.isContinuous = true
+    textScaleSlider.widthAnchor.constraint(equalToConstant: 170).isActive = true
+    let textScaleValue = NSTextField(labelWithString: String(format: "%.0f%%", textScale * 100))
+    textScaleValue.alignment = .right
+    textScaleValue.widthAnchor.constraint(equalToConstant: 48).isActive = true
+    let textScaleRow = NSStackView(views: [textScaleSlider, textScaleValue])
+    textScaleRow.orientation = .horizontal
+    textScaleRow.spacing = 10
     settingsSizePopup = sizePopup; settingsCatPopup = catPopup
+    settingsOrientationPopup = orientationPopup
+    settingsTextScaleSlider = textScaleSlider
+    settingsTextScaleValue = textScaleValue
     let appearance = NSGridView(views: [
       [NSTextField(labelWithString: tr("Display style")), popup([tr("Modern batteries"), tr("Pixel batteries")], selected: currentDisplayMode() == "modern" ? 0 : 1, action: #selector(settingsDisplayChanged(_:)))],
+      [NSTextField(labelWithString: tr("Battery orientation")), orientationPopup],
+      [NSTextField(labelWithString: tr("Text size")), textScaleRow],
       [NSTextField(labelWithString: tr("Battery size")), sizePopup],
       [NSTextField(labelWithString: tr("Cat")), catPopup],
       [NSTextField(labelWithString: tr("Battery color")), colorRow()],
@@ -1146,6 +1346,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     let pixelNote = NSTextField(wrappingLabelWithString: tr("Battery size and Cat apply to pixel batteries only."))
     pixelNote.textColor = .secondaryLabelColor; pixelNote.font = .systemFont(ofSize: 12); pixelNote.maximumNumberOfLines = 2
     settingsPixelOnlyNote = pixelNote; display.addArrangedSubview(pixelNote)
+    let modernNote = NSTextField(
+      wrappingLabelWithString: tr("Battery orientation and Text size apply to modern batteries only."))
+    modernNote.textColor = .secondaryLabelColor
+    modernNote.font = .systemFont(ofSize: 12)
+    modernNote.maximumNumberOfLines = 2
+    settingsModernOnlyNote = modernNote
+    display.addArrangedSubview(modernNote)
     let accountToggle = NSButton(checkboxWithTitle: tr("Show account name"), target: self,
                                  action: #selector(toggleMetric(_:)))
     accountToggle.identifier = NSUserInterfaceItemIdentifier("showAccountName")
@@ -1261,11 +1468,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
   }
   func applyPixelOnlyAvailability() {
     let pixel = pixelOnlyControlsEnabled(currentDisplayMode())
+    let modern = modernOnlyControlsEnabled(currentDisplayMode())
     settingsSizePopup?.isEnabled = pixel
     settingsCatPopup?.isEnabled = pixel
     settingsPixelOnlyNote?.isHidden = pixel
+    settingsOrientationPopup?.isEnabled = modern
+    settingsTextScaleSlider?.isEnabled = modern
+    settingsTextScaleValue?.isEnabled = modern
+    settingsModernOnlyNote?.isHidden = modern
   }
   @objc func settingsDisplayChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set(sender.indexOfSelectedItem == 0 ? "modern" : "pixel", forKey: DISPLAY_MODE_KEY); applyPixelOnlyAvailability(); rerender() }
+  @objc func settingsOrientationChanged(_ sender: NSPopUpButton) {
+    let orientation: ModernBatteryOrientation = sender.indexOfSelectedItem == 0 ? .vertical : .horizontal
+    UserDefaults.standard.set(orientation.rawValue, forKey: MODERN_BATTERY_ORIENTATION_KEY)
+    rerender()
+  }
+  @objc func settingsTextScaleChanged(_ sender: NSSlider) {
+    let scale = normalizedModernTextScale(sender.doubleValue)
+    sender.doubleValue = scale
+    UserDefaults.standard.set(scale, forKey: MODERN_TEXT_SCALE_KEY)
+    settingsTextScaleValue?.stringValue = String(format: "%.0f%%", scale * 100)
+    rerender()
+  }
   @objc func settingsSizeChanged(_ sender: NSPopUpButton) { setBattSize(sender.indexOfSelectedItem == 0 ? "big" : "small") }
   @objc func settingsCatChanged(_ sender: NSPopUpButton) { UserDefaults.standard.set([CatStyle.none, .nyan, .slim, .slime][sender.indexOfSelectedItem].rawValue, forKey: "catStyle"); rerender() }
   @objc func settingsProfileChanged(_ sender: NSPopUpButton) {
@@ -1490,7 +1714,7 @@ private func runCoreSelfTest() throws {
     cat: catState(snapshot, configuration: configuration), configuration: configuration)
   let modernImage = renderModernSummaryImage(
     dark: false, summaries: providerSummaries(snapshot, configuration: modernConfiguration),
-    assetContext: conversionAssets)
+    assetContext: conversionAssets, configuration: modernConfiguration)
   try require(pixelImage != nil && modernImage != nil,
               "conversion-bands-risk", "fixed-render-modes", "pixel or modern output was absent")
   let nonFiniteUsage = ClaudeUsage(
@@ -1511,7 +1735,8 @@ private func runCoreSelfTest() throws {
                 && renderBatteryImage(dark: false, items: nonFiniteItems,
                                       configuration: configuration) != nil
                 && renderModernSummaryImage(dark: false, summaries: nonFiniteSummaries,
-                                            assetContext: conversionAssets) != nil
+                                            assetContext: conversionAssets,
+                                            configuration: modernConfiguration) != nil
                 && !hasLowRemainingResetDistantRisk(remaining: .nan,
                                                      resetSeconds: .infinity),
               "conversion-bands-risk", "non-finite-surfaces",
@@ -1529,9 +1754,124 @@ private func runCoreSelfTest() throws {
   let smallImage = renderBatteryImage(dark: false, items: fixedItems, configuration: noCatSmall)
   try require(bigImage?.size == NSSize(width: 186, height: 24)
                 && smallImage?.size == NSSize(width: 140, height: 18)
-                && modernImage?.size == NSSize(width: 129, height: 24),
+                && modernImage?.size == NSSize(width: 79, height: 24),
               "conversion-bands-risk", "fixed-dimensions",
               "big/small/modern geometry changed")
+  // Given representative modern numeric labels, when the renderer centers each full glyph
+  // frame in its body, then the body carries the glyph width plus 4pt of horizontal padding.
+  let containmentValues: [Double] = [79, 62, 100]
+  let modernFont = modernValueAttributes(dark: false)[.font] as? NSFont
+  let compactModernFont = modernValueAttributes(dark: false, textScale: 0.8)[.font] as? NSFont
+  let largeModernFont = modernValueAttributes(dark: false, textScale: 1.3)[.font] as? NSFont
+  try require(ModernBatteryOrientation(storedValue: "horizontal") == .horizontal
+                && ModernBatteryOrientation(storedValue: "vertical") == .vertical
+                && ModernBatteryOrientation(storedValue: "unknown") == .vertical
+                && normalizedModernTextScale(0.1) == 0.8
+                && normalizedModernTextScale(1.05) == 1.05
+                && normalizedModernTextScale(2.0) == 1.3
+                && normalizedModernTextScale(.nan) == 1.0,
+              "modern-settings", "stored-values-normalized",
+              "modern orientation or text scale preferences escaped their supported values")
+  try require(containmentValues.map { modernValueLabel($0) } == ["79", "62", "100"],
+              "modern-geometry", "vertical-label-omits-percent",
+              "an upright modern battery label still included a percent sign")
+  try require(modernValueLabel(79, orientation: .vertical) == "79"
+                && modernValueLabel(79, orientation: .horizontal) == "79%"
+                && abs((compactModernFont?.pointSize ?? 0) - 7.92) < 0.001
+                && abs((largeModernFont?.pointSize ?? 0) - 12.87) < 0.001,
+              "modern-settings", "orientation-label-and-font-scale",
+              "orientation did not control the percent suffix or text scale did not reach the font")
+  try require(abs((modernFont?.pointSize ?? 0) - 9.9) < 0.001,
+              "modern-geometry", "vertical-label-ten-percent-smaller",
+              "the upright modern value font was not reduced from 11pt to 9.9pt")
+  let containmentGeometry = ModernBatteryGeometry(values: containmentValues)
+  var containmentHolds = true
+  for (index, value) in containmentValues.enumerated() {
+    let text = modernValueLabel(value) as NSString
+    let textSize = text.size(withAttributes: modernValueAttributes(dark: false))
+    let body = containmentGeometry.bodyFrame(at: index)
+    let textFrame = CGRect(origin: containmentGeometry.textOrigin(at: index, textSize: textSize),
+                           size: textSize)
+    containmentHolds = containmentHolds && body.width >= textSize.width + 4
+      && body.contains(textFrame)
+  }
+  try require(containmentHolds,
+              "modern-geometry", "full-label-containment",
+              "a modern battery body did not contain its full numeric label plus 4pt padding")
+  // Given the modern status image, when it lays out two provider summaries, then the
+  // upright body keeps the providers compact and side-by-side.
+  let uprightGeometry = ModernBatteryGeometry(values: [79, 62])
+  let claudeBody = uprightGeometry.bodyFrame(at: 0)
+  let codexBody = uprightGeometry.bodyFrame(at: 1)
+  let claudeTerminal = uprightGeometry.terminalFrame(at: 0)
+  let fillZero = uprightGeometry.fillFrame(at: 0, remaining: 0)
+  let fillHalf = uprightGeometry.fillFrame(at: 0, remaining: 50)
+  let fillFull = uprightGeometry.fillFrame(at: 0, remaining: 100)
+  try require(uprightGeometry.imageSize == CGSize(width: 79, height: 24)
+                && uprightGeometry.iconFrame(at: 0).minX == 0
+                && claudeBody.minX == 18 && claudeBody.height == 18
+                && claudeTerminal.size == CGSize(width: 6, height: 3)
+                && claudeTerminal.midX == claudeBody.midX && claudeTerminal.minY == claudeBody.maxY
+                && fillZero == CGRect(x: 18, y: 2, width: claudeBody.width, height: 0)
+                && fillHalf == CGRect(x: 18, y: 2, width: claudeBody.width, height: 9)
+                && fillFull == claudeBody
+                && claudeBody.minX < codexBody.minX
+                && uprightGeometry.iconFrame(at: 0).maxX < claudeBody.minX,
+              "modern-geometry", "upright-contract",
+              "the modern body, terminal, fill, or provider order broke the upright contract")
+  let horizontalGeometry = ModernBatteryGeometry(
+    values: [79, 62], orientation: .horizontal, textScale: 1.0)
+  let horizontalBody = horizontalGeometry.bodyFrame(at: 0)
+  let horizontalModernConfiguration = PresentationConfiguration(
+    isMetricVisible: { _ in true }, displayMode: { "modern" }, catStyle: { .none },
+    batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
+    language: { "en" }, modernBatteryOrientation: { .horizontal }, modernTextScale: { 1.0 })
+  let horizontalImage = renderModernSummaryImage(
+    dark: false, summaries: providerSummaries(snapshot, configuration: horizontalModernConfiguration),
+    assetContext: conversionAssets, configuration: horizontalModernConfiguration)
+  let uprightHatchMotion = modernHatchMotion(orientation: .vertical)
+  let horizontalHatchMotion = modernHatchMotion(orientation: .horizontal)
+  try require(horizontalGeometry.imageSize == CGSize(width: 127, height: 24)
+                && horizontalGeometry.iconFrame(at: 0).minX == 0
+                && horizontalBody == CGRect(x: 18, y: 3, width: 38, height: 18)
+                && horizontalGeometry.terminalFrame(at: 0)
+                  == CGRect(x: 56, y: 8, width: 3, height: 8)
+                && horizontalGeometry.fillFrame(at: 0, remaining: 50)
+                  == CGRect(x: 20, y: 5, width: 17, height: 14)
+                && horizontalImage?.size == NSSize(width: 127, height: 24)
+                && uprightHatchMotion.keyPath == "position.y"
+                && uprightHatchMotion.delta == HATCH_PITCH_PT
+                && horizontalHatchMotion.keyPath == "position.x"
+                && horizontalHatchMotion.delta == -HATCH_PITCH_PT,
+              "modern-settings", "horizontal-render-contract",
+              "the horizontal option did not restore its wide geometry, fill, or hatch direction")
+  try require(renderModernSummaryImage(dark: false, summaries: [], assetContext: conversionAssets) == nil,
+              "modern-geometry", "empty-summary",
+              "an empty modern summary list produced an invalid status image")
+  // Given the credential-free modern fixture, when it is rendered for evidence, then its fixed
+  // provider values, fallback assets, and 2x raster contract remain stable without production
+  // preferences or provider discovery.
+  let fixture = deterministicModernFixture()
+  let fixtureSummaries = providerSummaries(fixture.snapshot, configuration: fixture.configuration)
+  let fixtureImage = renderDeterministicModernFixture()
+  let fixturePNG = deterministicModernFixturePNG(fixtureImage)
+  let fixtureGeometry = ModernBatteryGeometry(values: [79, 62])
+  try require(fixtureSummaries.map { normalizedRemaining($0.remain) } == [79, 62]
+                && fixture.configuration.displayMode() == "modern"
+                && fixture.activeProviders.isEmpty
+                && fixture.assets.installedApp(for: .claude) == nil
+                && fixture.assets.installedApp(for: .codex) == nil
+                && fixtureImage?.size == fixtureGeometry.imageSize
+                && fixturePNG?.pixelsWide == Int(fixtureGeometry.imageSize.width * 2)
+                && fixturePNG?.pixelsHigh == Int(fixtureGeometry.imageSize.height * 2),
+              "modern-fixture", "fixed-render-contract",
+              "the deterministic modern fixture lost fixed values, fallback assets, or 2x output")
+  try require(!shouldSuppressDuplicateLaunch(previewRequested: true)
+                && shouldSuppressDuplicateLaunch(previewRequested: false),
+              "modern-fixture", "preview-coexists-with-installed-app",
+              "the preview fixture could not coexist with an installed app process")
+  print("self-test-core: modern-fixture PASS")
+  print("self-test-core: modern-geometry PASS")
   let hiddenConfiguration = PresentationConfiguration(
     isMetricVisible: { _ in false }, displayMode: { "pixel" }, catStyle: { .none },
     batterySize: { "big" }, goldTestEnabled: { false }, forcedCatState: { nil },
@@ -2144,7 +2484,7 @@ private func runCoreSelfTest() throws {
                 && emptyHatchRGB(dark: false) == (190, 190, 190),
               "drain-hatch", "derived-colors",
               "hatch colors were not derived from the remaining color")
-  try require(MODERN_ITEM_WIDTH == 59,
+  try require(MODERN_ITEM_WIDTH == 30,
               "drain-hatch", "modern-item-width",
               "modern item width did not match the rendered layout")
 
@@ -2181,11 +2521,10 @@ private func runCoreSelfTest() throws {
                 && stripes?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-layer-installed",
               "active provider did not get a masked, animated hatch layer")
-  try require((clip?.frame.width ?? 0) > 0 && (clip?.frame.height ?? 0) == 14
-                && (stripes?.frame.width ?? 0) == (clip?.frame.width ?? 0) + HATCH_PITCH_PT,
-              "drain-hatch", "modern-layer-geometry",
-              "hatch layer geometry did not match the battery fill")
-  // The clip layer covers the centered "NN%" in the button image, so the number is redrawn above it
+  let hatchGeometry = ModernBatteryGeometry(values: [50])
+  let hatchBody = hatchGeometry.bodyFrame(at: 0)
+  let hatchFill = hatchGeometry.fillFrame(at: 0, remaining: 50)
+  // The clip layer covers the centered value in the button image, so the number is redrawn above it
   // at exactly the origin renderModernSummaryImage drew it from — glyph origin, not box center,
   // because the layer is sized to the rounded-up raster so .resize gravity can't squeeze it
   let label = hatchModeDelegate.activityTextLayers[.claude]
@@ -2194,26 +2533,46 @@ private func runCoreSelfTest() throws {
           let pixels = text.image.dataProvider?.data else { return false }
     return (pixels as Data).contains { $0 != 0 }
   }
+  func framesMatch(_ actual: CGRect?, _ expected: CGRect) -> Bool {
+    guard let actual else { return false }
+    return abs(actual.minX - expected.minX) < 0.001
+      && abs(actual.minY - expected.minY) < 0.001
+      && abs(actual.width - expected.width) < 0.001
+      && abs(actual.height - expected.height) < 0.001
+  }
   let labelText = modernValueTextImage(50, dark: false)
-  let labelOriginX = MODERN_IMAGE_PAD + MODERN_ICON_WIDTH + MODERN_ICON_GAP
-    + (MODERN_BODY_WIDTH - (labelText?.size.width ?? 0)) / 2
-  try require(label?.contents != nil && (label?.frame.width ?? 0) > 0 && textImageHasInk(50)
-                && label?.frame.minY == clip?.frame.minY
-                && labelText != nil
-                && label?.frame.width == labelText?.rasterSize.width
-                && label?.frame.height == labelText?.rasterSize.height
-                && abs((label?.frame.minX ?? 0) - labelOriginX) < 0.001,
-              "drain-hatch", "modern-text-layer-installed",
-              "the percentage was not redrawn above the hatch at the image's own text rect")
-  // Drain, not charge: the stripes travel exactly one pitch left per hatch period
+  let labelOrigin = hatchGeometry.textOrigin(at: 0, textSize: labelText?.size ?? .zero)
+  let hatchMask = clip?.mask as? CAShapeLayer
+  let labelFrameInClip = (label?.frame ?? .zero)
+    .offsetBy(dx: -(clip?.frame.minX ?? 0), dy: -(clip?.frame.minY ?? 0))
+    .intersection(clip?.bounds ?? .zero)
+  let labelClearancePoint = CGPoint(x: labelFrameInClip.midX, y: labelFrameInClip.midY)
+  let hatchEdgePoint = CGPoint(x: 0.25, y: 0.25)
   let drift = stripes?.animation(forKey: "drain") as? CABasicAnimation
   let driftFrom = (drift?.fromValue as? NSNumber)?.doubleValue
   let driftTo = (drift?.toValue as? NSNumber)?.doubleValue
+  try require(label?.contents != nil && (label?.frame.width ?? 0) > 0 && textImageHasInk(50)
+                && labelText != nil
+                && label?.frame.width == labelText?.rasterSize.width
+                && label?.frame.height == labelText?.rasterSize.height
+                && framesMatch(clip?.frame, hatchFill) && hatchBody.contains(clip?.frame ?? .null)
+                && abs((label?.frame.minX ?? 0) - labelOrigin.x) < 0.001
+                && abs((label?.frame.minY ?? 0) - labelOrigin.y) < 0.001
+                && hatchBody.contains(label?.frame ?? .null)
+                && hatchMask?.path?.contains(labelClearancePoint, using: .evenOdd) == false
+                && hatchMask?.path?.contains(hatchEdgePoint, using: .evenOdd) == true
+                && (stripes?.frame.height ?? 0) == hatchFill.height + HATCH_PITCH_PT
+                && drift?.keyPath == "position.y" && driftFrom != nil && driftTo != nil
+                && driftTo! == driftFrom! + Double(HATCH_PITCH_PT)
+                && drift?.duration == HATCH_PERIOD && drift?.repeatCount == .infinity,
+              "drain-hatch", "modern-upright-geometry",
+              "hatch clip, text origin, or drain motion did not follow the shared upright geometry")
   try require(driftFrom != nil && driftTo != nil
-                && driftTo! == driftFrom! - Double(HATCH_PITCH_PT)
+                && drift?.keyPath == "position.y"
+                && driftTo! == driftFrom! + Double(HATCH_PITCH_PT)
                 && drift?.duration == HATCH_PERIOD && drift?.repeatCount == .infinity,
               "drain-hatch", "modern-drift-direction",
-              "the drain animation did not drift one pitch left over one hatch period")
+              "the drain animation did not drift one pitch upward over one hatch period")
   // A second call with nothing changed must not restart the running "drain" animation
   hatchModeDelegate.updateActivityAnimation()
   let clipReused = hatchModeDelegate.activityLayers[.claude]
@@ -2254,8 +2613,6 @@ private func runCoreSelfTest() throws {
                 && stripesAfterRefresh?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-layer-survives-refresh",
               "a full refresh cycle on an unchanged presentation reset the running drain animation")
-  // Low-fill fallback: above the threshold the layer tracks the fill in the derived tone,
-  // below it the whole body is hatched in the flat empty tone
   func hatchModeSnapshot(remaining: Double) -> Snapshot {
     let usage = ClaudeUsage(measuredAt: now, live: true,
                             fiveHour: UsageWindow(pct: 100 - remaining, resetsAt: now + 4_000),
@@ -2266,20 +2623,17 @@ private func runCoreSelfTest() throws {
   hatchModeDelegate.requestRefresh(.manual)
   hatchModeCompletions[2](hatchModeSnapshot(remaining: 20))
   let clipRedBand = hatchModeDelegate.activityLayers[.claude]
-  try require(clipRedBand?.frame.width == (MODERN_BODY_WIDTH - 4) * 20 / 100
+  let redGeometry = ModernBatteryGeometry(values: [20])
+  try require(framesMatch(clipRedBand?.frame, redGeometry.fillFrame(at: 0, remaining: 20))
                 && clipRedBand?.name?.contains("\(activityHatchRGB(20, dark: false))") == true,
-              "drain-hatch", "derived-hatch-red-band-modern",
-              "a red-band battery fell back to the flat empty tone instead of a derived hatch")
+              "drain-hatch", "low-fill-bottom-anchor-modern",
+              "a narrow red-band battery did not use its bottom-anchored remaining fill")
   hatchModeDelegate.requestRefresh(.manual)
   hatchModeCompletions[3](hatchModeSnapshot(remaining: 0))
-  let clipEmpty = hatchModeDelegate.activityLayers[.claude]
-  try require(clipEmpty?.frame.width == MODERN_BODY_WIDTH - 4
-                && clipEmpty?.name?.contains("\(emptyHatchRGB(dark: false))") == true,
-              "drain-hatch", "low-fill-fallback-modern",
-              "an empty battery did not hatch the whole body in the empty tone")
-  // Below the threshold the signature is value-independent, so the reuse path is what a draining
-  // provider actually takes — the label has to be refreshed in place there, without the layer
-  // teardown that a widened signature would cause (that would reset the drift to t=0).
+  try require(hatchModeDelegate.activityLayers[.claude] == nil
+                && hatchModeDelegate.activityTextLayers[.claude] == nil,
+              "drain-hatch", "zero-removes-drain-modern",
+              "an empty battery retained a hatch or replacement percentage layer")
   func hatchLabelProbe() -> (width: CGFloat, pixels: Int)? {
     // CFTypeID rather than `as?` — a conditional downcast to a CF type always succeeds, so a
     // non-image `contents` would crash the probe instead of failing the assertion below
@@ -2291,6 +2645,7 @@ private func runCoreSelfTest() throws {
   hatchModeDelegate.requestRefresh(.manual)
   hatchModeCompletions[4](hatchModeSnapshot(remaining: 15))
   let labelFifteen = hatchModeDelegate.activityTextLayers[.claude]
+  let clipFifteen = hatchModeDelegate.activityLayers[.claude]
   let probeFifteen = hatchLabelProbe()
   hatchModeDelegate.requestRefresh(.manual)
   hatchModeCompletions[5](hatchModeSnapshot(remaining: 5))
@@ -2300,8 +2655,8 @@ private func runCoreSelfTest() throws {
                 && probeFifteen! != probeFive!
                 && labelFifteen != nil
                 && ObjectIdentifier(labelFifteen!) == ObjectIdentifier(hatchModeDelegate.activityTextLayers[.claude]!)
-                && clipEmpty != nil && clipDraining != nil
-                && ObjectIdentifier(clipEmpty!) == ObjectIdentifier(clipDraining!)
+                && clipFifteen != nil && clipDraining != nil
+                && ObjectIdentifier(clipFifteen!) == ObjectIdentifier(clipDraining!)
                 && clipDraining?.sublayers?.first?.animation(forKey: "drain") != nil,
               "drain-hatch", "modern-text-refreshed-on-reuse",
               "a provider draining below the threshold kept the stale percentage over the new image")
@@ -2310,20 +2665,69 @@ private func runCoreSelfTest() throws {
   // t=0 every REFRESH_SECONDS, exactly while the animation is on screen. Note this feeds two
   // *different* snapshots; modern-layer-survives-refresh feeds the same one twice and cannot see it.
   hatchModeDelegate.requestRefresh(.manual)
-  hatchModeCompletions[6](hatchModeSnapshot(remaining: 75))
-  let clipSeventyFive = hatchModeDelegate.activityLayers[.claude]
+  hatchModeCompletions[6](hatchModeSnapshot(remaining: 100))
+  let clipOneHundred = hatchModeDelegate.activityLayers[.claude]
+  let oneHundredFrame = clipOneHundred?.frame
+  let oneHundredGeometry = ModernBatteryGeometry(values: [100])
+  let oneHundredLabel = hatchModeDelegate.activityTextLayers[.claude]
   hatchModeDelegate.requestRefresh(.manual)
-  hatchModeCompletions[7](hatchModeSnapshot(remaining: 71))
-  let clipSeventyOne = hatchModeDelegate.activityLayers[.claude]
-  let stripesResized = clipSeventyOne?.sublayers?.first
-  try require(clipSeventyFive != nil && clipSeventyOne != nil
-                && ObjectIdentifier(clipSeventyFive!) == ObjectIdentifier(clipSeventyOne!)
-                && clipSeventyOne?.frame.width == (MODERN_BODY_WIDTH - 4) * 71 / 100
-                && stripesResized?.frame.width == (clipSeventyOne?.frame.width ?? 0) + HATCH_PITCH_PT
-                && stripesResized?.position.x == 0   // left anchor keeps the drift's from/to valid
-                && stripesResized?.animation(forKey: "drain") != nil,
+  hatchModeCompletions[7](hatchModeSnapshot(remaining: 75))
+  let clipSeventyFive = hatchModeDelegate.activityLayers[.claude]
+  let stripesResized = clipSeventyFive?.sublayers?.first
+  let seventyFiveGeometry = ModernBatteryGeometry(values: [75])
+  try require(clipOneHundred != nil && clipSeventyFive != nil
+                && ObjectIdentifier(clipOneHundred!) == ObjectIdentifier(clipSeventyFive!)
+                && framesMatch(oneHundredFrame, oneHundredGeometry.fillFrame(at: 0, remaining: 100))
+                && oneHundredGeometry.bodyFrame(at: 0).contains(oneHundredLabel?.frame ?? .null)
+                && framesMatch(clipSeventyFive?.frame, seventyFiveGeometry.fillFrame(at: 0, remaining: 75))
+                && clipSeventyFive?.frame.minY == oneHundredFrame?.minY
+                && (clipSeventyFive?.frame.height ?? 0) < (oneHundredFrame?.height ?? 0)
+                && stripesResized?.frame.width == clipSeventyFive?.frame.width
+                && stripesResized?.frame.height == (clipSeventyFive?.frame.height ?? 0) + HATCH_PITCH_PT
+                && stripesResized?.position.y == -HATCH_PITCH_PT
+                && (stripesResized?.animation(forKey: "drain") as? CABasicAnimation)?.keyPath == "position.y",
               "drain-hatch", "modern-layer-resized-in-place",
               "a changed fill rebuilt the hatch layer instead of resizing it, resetting the drift")
+  // Given the renderer's representative 79, 62, and 100 values, when live activity is
+  // overlaid, then every overlay comes from the renderer's value-derived geometry contract.
+  let multiUsage = ClaudeUsage(measuredAt: now, live: true,
+                               fiveHour: UsageWindow(pct: 21, resetsAt: now + 4_000),
+                               weekly: UsageWindow(pct: 21, resetsAt: nil), fable: nil)
+  let multiCodex = CodexUsage(measuredAt: now, live: true, limitId: nil, plan: "plus",
+                              primary: CodexWindow(usedPercent: 38, resetsAt: now + 3_000),
+                              secondary: nil, credits: nil)
+  let multiSnapshot = Snapshot(now: now, usage: multiUsage, block: nil, models: nil,
+                               codex: multiCodex, update: (nil, false))
+  let multiSummaries = providerSummaries(multiSnapshot, configuration: hatchModeConfiguration)
+  let multiGeometry = ModernBatteryGeometry(values: multiSummaries.map { normalizedRemaining($0.remain) })
+  let multiImage = renderModernSummaryImage(dark: false, summaries: multiSummaries,
+                                            assetContext: refreshAssets,
+                                            configuration: hatchModeConfiguration)
+  hatchModeDelegate.requestRefresh(.manual)
+  hatchModeCompletions.last?(multiSnapshot)
+  hatchModeDelegate.apiActiveProviders = [.claude, .codex]
+  hatchModeDelegate.updateActivityAnimation()
+  let multiClaudeClip = hatchModeDelegate.activityLayers[.claude]
+  let multiCodexClip = hatchModeDelegate.activityLayers[.codex]
+  let multiClaudeLabel = hatchModeDelegate.activityTextLayers[.claude]
+  let multiCodexLabel = hatchModeDelegate.activityTextLayers[.codex]
+  let multiClaudeBody = multiGeometry.bodyFrame(at: 0)
+  let multiCodexBody = multiGeometry.bodyFrame(at: 1)
+  try require(multiSummaries.map { normalizedRemaining($0.remain) } == [79, 62]
+                && multiImage?.size == multiGeometry.imageSize
+                && framesMatch(multiClaudeClip?.frame, multiGeometry.fillFrame(at: 0, remaining: 79))
+                && framesMatch(multiCodexClip?.frame, multiGeometry.fillFrame(at: 1, remaining: 62))
+                && multiClaudeBody.contains(multiClaudeLabel?.frame ?? .null)
+                && multiCodexBody.contains(multiCodexLabel?.frame ?? .null)
+                && multiGeometry.terminalFrame(at: 0).midX == multiClaudeBody.midX
+                && multiGeometry.terminalFrame(at: 1).midX == multiCodexBody.midX
+                && abs((multiCodexClip?.frame.minX ?? -.infinity) - multiCodexBody.minX) < 0.001
+                && multiClaudeBody.maxX < multiCodexBody.minX,
+              "drain-hatch", "activity-uses-renderer-widths",
+              "79, 62, or 100 activity frames diverged from the rendered value-derived geometry")
+  let multiClaudeFrame = multiClaudeClip?.frame.debugDescription ?? "nil"
+  let multiCodexFrame = multiCodexClip?.frame.debugDescription ?? "nil"
+  print("self-test-core: activity-frame-probe values=79/62/100 claude=\(multiClaudeFrame) codex=\(multiCodexFrame)")
   // Nothing else pins the signed vertical origin: the headless harness has no button, so
   // buttonHeight == imageHeight there and the -1 of a real 22pt menu bar button never appears
   try require(hatchOriginY(buttonHeight: 22, imageHeight: MODERN_IMAGE_HEIGHT) == -1
@@ -2559,9 +2963,10 @@ private func runCoreSelfTest() throws {
               "battery-color", "sheet-gamut", "the hue window let through a non-green color")
   try require(hsbFromHex("nope") == nil,
               "battery-color", "hsb-reject", "hsbFromHex accepted a malformed color")
-  try require(pixelOnlyControlsEnabled("pixel") && !pixelOnlyControlsEnabled("modern"),
+  try require(pixelOnlyControlsEnabled("pixel") && !pixelOnlyControlsEnabled("modern")
+                && modernOnlyControlsEnabled("modern") && !modernOnlyControlsEnabled("pixel"),
               "battery-color", "pixel-only-controls",
-              "battery size and cat availability no longer tracks the display mode")
+              "style-specific setting availability no longer tracks the display mode")
   // Every settings-window string must exist in all six languages — a missing key silently
   // falls back to English and produces a half-translated window.
   // "General" (es) and "Claude Fable" (all languages) are spelled the same as the English
@@ -2575,9 +2980,11 @@ private func runCoreSelfTest() throws {
     "Updates", "The app checks for updates once a day. You can review the source and releases on GitHub.",
     "Menu bar items", "Claude 5h", "Claude week", "Codex 5h", "Codex week",
     "Battery color", "Custom…", "Settings", "Show account name",
+    "Battery orientation", "Vertical", "Horizontal", "Text size",
     "rate limited — retrying in %@ (cached %@ ago)",
     "Hue", "Saturation", "Brightness", "Preview", "Done",
     "Default — follows light and dark", "Battery size and Cat apply to pixel batteries only.",
+    "Battery orientation and Text size apply to modern batteries only.",
     "Modern batteries show the tightest of the selected limits; pixel batteries show one per limit. Claude Fable is off by default.",
   ]
   let missingTranslations = settingsStrings.flatMap { key in
@@ -3175,6 +3582,20 @@ if CommandLine.arguments.contains("--self-test-core") {
     exit(1)
   }
 }
+if let idx = CommandLine.arguments.firstIndex(of: "--render-modern") {
+  guard CommandLine.arguments.count > idx + 1 else {
+    FileHandle.standardError.write(Data("render-modern: missing absolute output path\n".utf8))
+    exit(2)
+  }
+  do {
+    try writeDeterministicModernFixturePNG(to: CommandLine.arguments[idx + 1])
+    print("render-modern: saved")
+    exit(0)
+  } catch {
+    FileHandle.standardError.write(Data("render-modern: \(error)\n".utf8))
+    exit(1)
+  }
+}
 // ── --render-glint <path>: saves an intermediate glint frame as PNG (for render verification) ──
 if let idx = CommandLine.arguments.firstIndex(of: "--render-glint"), CommandLine.arguments.count > idx + 1 {
   let items = [BattItem(label: "C5", provider: .claude, remain: 100), BattItem(label: "CW", provider: .claude, remain: 100),
@@ -3374,13 +3795,32 @@ if CommandLine.arguments.contains("--test-activity-monitor") {
 // ── Duplicate-launch guard — quits silently if an instance with the same bundle ID is already running ──
 let myID = Bundle.main.bundleIdentifier ?? "com.dennykim.claude-codex-battery-app"
 let myPID = ProcessInfo.processInfo.processIdentifier
-if NSRunningApplication.runningApplications(withBundleIdentifier: myID)
+let settingsPreviewRequested = CommandLine.arguments.contains("--preview-settings")
+if shouldSuppressDuplicateLaunch(
+  previewRequested: CommandLine.arguments.contains("--preview-modern") || settingsPreviewRequested)
+  && NSRunningApplication.runningApplications(withBundleIdentifier: myID)
   .contains(where: { $0.processIdentifier != myPID }) {
   exit(0)
 }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // menu bar only (no Dock icon)
-let delegate = AppDelegate()
+let previewFixture = requestedPreviewModernFixture()
+let delegate = AppDelegate(
+  presentationConfiguration: previewFixture?.configuration ?? .production,
+  collector: previewFixture.map { fixture in { completion in completion(fixture.snapshot) } }
+    ?? { completion in
+      DispatchQueue.global(qos: .utility).async {
+        let snapshot = collectSnapshot()
+        DispatchQueue.main.async { completion(snapshot) }
+      }
+    },
+  assetContextFactory: previewFixture.map { fixture in { fixture.assets } } ?? { .production() },
+  duplicateReader: previewFixture == nil ? { swiftBarDuplicate() } : { false },
+  reduceMotionReader: previewFixture == nil
+    ? { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    : { false },
+  previewFixture: previewFixture)
 app.delegate = delegate
+if settingsPreviewRequested { DispatchQueue.main.async { delegate.showSettings() } }
 app.run()

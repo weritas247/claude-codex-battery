@@ -161,6 +161,31 @@ private let PRESET_SMALL = Preset(font: FONT35, adv: { _ in 4 },
 
 let SIZE_FILE = "\(STATE_DIR)/.batt-size"
 let DISPLAY_MODE_KEY = "displayMode"
+let MODERN_BATTERY_ORIENTATION_KEY = "modernBatteryOrientation"
+let MODERN_TEXT_SCALE_KEY = "modernTextScale"
+
+enum ModernBatteryOrientation: String {
+  case vertical, horizontal
+
+  init(storedValue: String?) {
+    self = storedValue == Self.horizontal.rawValue ? .horizontal : .vertical
+  }
+}
+
+func normalizedModernTextScale(_ scale: Double) -> Double {
+  guard scale.isFinite else { return 1.0 }
+  return min(1.3, max(0.8, scale))
+}
+
+func currentModernBatteryOrientation() -> ModernBatteryOrientation {
+  ModernBatteryOrientation(
+    storedValue: UserDefaults.standard.string(forKey: MODERN_BATTERY_ORIENTATION_KEY))
+}
+
+func currentModernTextScale() -> Double {
+  guard UserDefaults.standard.object(forKey: MODERN_TEXT_SCALE_KEY) != nil else { return 1.0 }
+  return normalizedModernTextScale(UserDefaults.standard.double(forKey: MODERN_TEXT_SCALE_KEY))
+}
 private let METRIC_VISIBILITY_DEFAULTS: [String: Bool] = [
   "claude5": true, "claudeWeek": true, "claudeFable": false,
   "codex5": true, "codexWeek": true,
@@ -279,20 +304,136 @@ private func heatRemain(_ band: RemainingBand, dark: Bool, custom: String? = nil
 }
 
 // Modern layout geometry — shared by the renderer and the activity layers so the two can't drift
-let MODERN_ICON_WIDTH: CGFloat = 13
-let MODERN_ICON_GAP: CGFloat = 5
-let MODERN_BODY_WIDTH: CGFloat = 38
-let MODERN_BODY_HEIGHT: CGFloat = 18
-let MODERN_ITEM_GAP: CGFloat = 7
-let MODERN_IMAGE_PAD: CGFloat = 2
-let MODERN_IMAGE_HEIGHT: CGFloat = 24
-let MODERN_ITEM_WIDTH = MODERN_ICON_WIDTH + MODERN_ICON_GAP + MODERN_BODY_WIDTH + 3
+struct ModernBatteryGeometry {
+  static let iconSize = CGSize(width: 13, height: 13)
+  static let iconGap: CGFloat = 5
+  static let bodySize = CGSize(width: 12, height: 18)
+  static let horizontalBodySize = CGSize(width: 38, height: 18)
+  static let minimumBodyWidth: CGFloat = 16
+  static let textHorizontalPadding: CGFloat = 4
+  static let terminalSize = CGSize(width: 6, height: 3)
+  static let horizontalTerminalSize = CGSize(width: 3, height: 8)
+  static let providerGap: CGFloat = 7
+  static let imagePadding: CGFloat = 2
+  static let imageLeadingPadding: CGFloat = 0
+  static let imageTrailingPadding: CGFloat = 2
+  static let imageHeight: CGFloat = 24
+
+  let orientation: ModernBatteryOrientation
+  let textScale: Double
+  let bodyWidths: [CGFloat]
+
+  init(summaryCount: Int, orientation: ModernBatteryOrientation = .vertical,
+       textScale: Double = 1.0) {
+    self.orientation = orientation
+    self.textScale = normalizedModernTextScale(textScale)
+    let width = orientation == .horizontal ? Self.horizontalBodySize.width : Self.bodySize.width
+    bodyWidths = Array(repeating: width, count: max(0, summaryCount))
+  }
+
+  init(values: [Double], orientation: ModernBatteryOrientation = .vertical,
+       textScale: Double = 1.0) {
+    let normalizedScale = normalizedModernTextScale(textScale)
+    self.orientation = orientation
+    self.textScale = normalizedScale
+    bodyWidths = orientation == .horizontal
+      ? Array(repeating: Self.horizontalBodySize.width, count: values.count)
+      : values.map { Self.bodyWidth(for: $0, textScale: normalizedScale) }
+  }
+
+  static func bodyWidth(for value: Double, textScale: Double = 1.0) -> CGFloat {
+    let label = modernValueLabel(value) as NSString
+    let textWidth = label.size(
+      withAttributes: modernValueAttributes(dark: false, textScale: textScale)).width
+    return max(Self.minimumBodyWidth, textWidth + Self.textHorizontalPadding)
+  }
+
+  var itemWidth: CGFloat {
+    Self.iconSize.width + Self.iconGap + (bodyWidths.first ?? Self.bodySize.width)
+      + (orientation == .horizontal ? Self.horizontalTerminalSize.width : 0)
+  }
+  var imageSize: CGSize {
+    let itemsWidth = bodyWidths.reduce(CGFloat(0)) { partial, bodyWidth in
+      partial + Self.iconSize.width + Self.iconGap + bodyWidth
+        + (orientation == .horizontal ? Self.horizontalTerminalSize.width : 0)
+    }
+    return CGSize(width: ceil(Self.imageLeadingPadding + Self.imageTrailingPadding + itemsWidth
+                              + CGFloat(max(0, bodyWidths.count - 1)) * Self.providerGap),
+                  height: Self.imageHeight)
+  }
+
+  func itemOrigin(at index: Int) -> CGPoint {
+    let priorItemsWidth = bodyWidths.prefix(index).reduce(CGFloat(0)) { partial, bodyWidth in
+      partial + Self.iconSize.width + Self.iconGap + bodyWidth
+        + (orientation == .horizontal ? Self.horizontalTerminalSize.width : 0)
+        + Self.providerGap
+    }
+    return CGPoint(x: Self.imageLeadingPadding + priorItemsWidth, y: 0)
+  }
+
+  func bodyFrame(at index: Int) -> CGRect {
+    let origin = itemOrigin(at: index)
+    let y = orientation == .vertical ? Self.imagePadding : Self.imagePadding + 1
+    return CGRect(x: origin.x + Self.iconSize.width + Self.iconGap, y: y,
+                  width: bodyWidths[index], height: Self.bodySize.height)
+  }
+
+  func terminalFrame(at index: Int) -> CGRect {
+    let body = bodyFrame(at: index)
+    if orientation == .horizontal {
+      return CGRect(x: body.maxX, y: body.midY - Self.horizontalTerminalSize.height / 2,
+                    width: Self.horizontalTerminalSize.width,
+                    height: Self.horizontalTerminalSize.height)
+    }
+    return CGRect(x: body.midX - Self.terminalSize.width / 2, y: body.maxY,
+                  width: Self.terminalSize.width, height: Self.terminalSize.height)
+  }
+
+  func iconFrame(at index: Int) -> CGRect {
+    let body = bodyFrame(at: index)
+    return CGRect(x: itemOrigin(at: index).x, y: body.midY - Self.iconSize.height / 2,
+                  width: Self.iconSize.width, height: Self.iconSize.height)
+  }
+
+  func fillFrame(at index: Int, remaining: Double) -> CGRect {
+    let body = bodyFrame(at: index)
+    let fraction = CGFloat(min(100, max(0, remaining)) / 100)
+    if orientation == .horizontal {
+      let interior = body.insetBy(dx: 2, dy: 2)
+      return CGRect(x: interior.minX, y: interior.minY,
+                    width: interior.width * fraction, height: interior.height)
+    }
+    let height = body.height * fraction
+    return CGRect(x: body.minX, y: body.minY, width: body.width, height: height)
+  }
+
+  func textOrigin(at index: Int, textSize: CGSize) -> CGPoint {
+    let body = bodyFrame(at: index)
+    return CGPoint(x: body.midX - textSize.width / 2, y: body.midY - textSize.height / 2)
+  }
+}
+
+let MODERN_ICON_WIDTH = ModernBatteryGeometry.iconSize.width
+let MODERN_ICON_GAP = ModernBatteryGeometry.iconGap
+let MODERN_BODY_WIDTH = ModernBatteryGeometry.bodySize.width
+let MODERN_BODY_HEIGHT = ModernBatteryGeometry.bodySize.height
+let MODERN_ITEM_GAP = ModernBatteryGeometry.providerGap
+let MODERN_IMAGE_PAD = ModernBatteryGeometry.imagePadding
+let MODERN_IMAGE_HEIGHT = ModernBatteryGeometry.imageHeight
+let MODERN_ITEM_WIDTH = ModernBatteryGeometry(summaryCount: 1).itemWidth
 
 // Drain hatch — 45° stripes drifting right→left over the remaining fill ("this is being used up").
 // Modern mode only; the pixel capsule interior is too small to carry stripes legibly.
 let HATCH_PITCH_PT: CGFloat = 9
 let HATCH_STRIPE_PT: CGFloat = 3
 let HATCH_PERIOD: CFTimeInterval = 0.6
+
+func modernHatchMotion(orientation: ModernBatteryOrientation)
+  -> (keyPath: String, delta: CGFloat) {
+  orientation == .vertical
+    ? ("position.y", HATCH_PITCH_PT)
+    : ("position.x", -HATCH_PITCH_PT)
+}
 
 // Below this the fill is too narrow to carry the stripes — they run over the whole body instead.
 // Points of the 34pt modern capsule interior.
@@ -340,20 +481,30 @@ func hatchStripeImage(width: CGFloat, height: CGFloat, color: NSColor) -> CGImag
   return ctx.makeImage()
 }
 
-// The percentage drawn inside a modern capsule — shared so the activity layer can redraw it above
+// The remaining value drawn inside a modern capsule — shared so the activity layer can redraw it above
 // the hatch with exactly the font and color the button image already used.
-func modernValueAttributes(dark: Bool) -> [NSAttributedString.Key: Any] {
+func modernValueAttributes(dark: Bool, textScale: Double = 1.0)
+  -> [NSAttributedString.Key: Any] {
   let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
-  return [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: ink]
+  let pointSize = 9.9 * normalizedModernTextScale(textScale)
+  return [.font: NSFont.systemFont(ofSize: pointSize, weight: .semibold), .foregroundColor: ink]
 }
 
-// Just the "NN%" glyphs on transparency, plus the size the caller needs to center them and the
+func modernValueLabel(_ value: Double,
+                      orientation: ModernBatteryOrientation = .vertical) -> String {
+  let number = "\(Int(normalizedRemaining(value).rounded()))"
+  return orientation == .horizontal ? "\(number)%" : number
+}
+
+// Just the numeric glyphs on transparency, plus the size the caller needs to center them and the
 // size the raster actually covers — the pixel grid rounds up, and a layer sized to `size` instead
 // of `rasterSize` squeezes the glyphs under the default `.resize` contents gravity.
-func modernValueTextImage(_ value: Double, dark: Bool)
+func modernValueTextImage(_ value: Double, dark: Bool,
+                          orientation: ModernBatteryOrientation = .vertical,
+                          textScale: Double = 1.0)
   -> (image: CGImage, size: CGSize, rasterSize: CGSize)? {
-  let text = "\(Int(value.rounded()))%" as NSString
-  let attrs = modernValueAttributes(dark: dark)
+  let text = modernValueLabel(value, orientation: orientation) as NSString
+  let attrs = modernValueAttributes(dark: dark, textScale: textScale)
   let size = text.size(withAttributes: attrs)
   let scale: CGFloat = 2   // pairs with contentsScale on the layer that shows this image
   let pw = Int((size.width * scale).rounded(.up)), ph = Int((size.height * scale).rounded(.up))
@@ -523,40 +674,36 @@ func renderModernSummaryImage(dark: Bool, summaries: [ProviderSummary],
                               assetContext: ProviderAssetContext = .production(),
                               configuration: PresentationConfiguration = .production) -> NSImage? {
   guard !summaries.isEmpty else { return nil }
-  let iconWidth = MODERN_ICON_WIDTH, iconGap = MODERN_ICON_GAP
-  let bodyW = MODERN_BODY_WIDTH, bodyH = MODERN_BODY_HEIGHT, itemGap = MODERN_ITEM_GAP
-  let itemW = MODERN_ITEM_WIDTH
-  let image = NSImage(size: NSSize(width: ceil(MODERN_IMAGE_PAD * 2 + CGFloat(summaries.count) * itemW
-                                               + CGFloat(summaries.count - 1) * itemGap),
-                                   height: MODERN_IMAGE_HEIGHT))
+  let orientation = configuration.modernBatteryOrientation()
+  let textScale = normalizedModernTextScale(configuration.modernTextScale())
+  let geometry = ModernBatteryGeometry(
+    values: summaries.map { normalizedRemaining($0.remain) },
+    orientation: orientation, textScale: textScale)
+  let image = NSImage(size: geometry.imageSize)
   image.lockFocus()
   let customGreen = configuration.batteryGreen()
   let ink = dark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.2, alpha: 1)
-  var x: CGFloat = MODERN_IMAGE_PAD
   for (index, summary) in summaries.enumerated() {
-    let bodyX = x + iconWidth + iconGap
-    let rect = NSRect(x: bodyX, y: 3, width: bodyW, height: bodyH)
-    let outline = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
-    ink.setStroke(); outline.lineWidth = 1.0; outline.stroke()
-    let terminal = NSBezierPath(roundedRect: NSRect(x: bodyX + bodyW, y: 8, width: 3, height: 8), xRadius: 1.5, yRadius: 1.5)
-    ink.setFill(); terminal.fill()
+    let body = geometry.bodyFrame(at: index)
     let value = normalizedRemaining(summary.remain)
     let band = remainingBand(value)
-    let fill = NSRect(x: bodyX + 2, y: 5, width: max(0, (bodyW - 4) * value / 100), height: bodyH - 4)
+    let fill = geometry.fillFrame(at: index, remaining: value)
     let c = heatRemain(band, dark: dark, custom: customGreen)
     NSColor(calibratedRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1).setFill()
     NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
+    let outline = NSBezierPath(roundedRect: body, xRadius: 4, yRadius: 4)
+    ink.setStroke(); outline.lineWidth = 1.0; outline.stroke()
+    let terminal = NSBezierPath(roundedRect: geometry.terminalFrame(at: index), xRadius: 1.5, yRadius: 1.5)
+    ink.setFill(); terminal.fill()
     if let icon = providerAsset(summary.provider, context: assetContext) {
-      icon.draw(in: NSRect(x: x, y: 5, width: iconWidth, height: iconWidth), from: .zero, operation: .sourceOver, fraction: 1)
+      icon.draw(in: geometry.iconFrame(at: index), from: .zero, operation: .sourceOver, fraction: 1)
     } else {
-      drawProviderGlyph(summary.provider, at: NSPoint(x: x, y: 5))
+      drawProviderGlyph(summary.provider, at: geometry.iconFrame(at: index).origin)
     }
-    let valueText = "\(Int(value.rounded()))%"
-    let attrs = modernValueAttributes(dark: dark)
+    let valueText = modernValueLabel(value, orientation: orientation)
+    let attrs = modernValueAttributes(dark: dark, textScale: textScale)
     let size = (valueText as NSString).size(withAttributes: attrs)
-    (valueText as NSString).draw(at: NSPoint(x: bodyX + (bodyW - size.width) / 2, y: 5), withAttributes: attrs)
-    x += itemW
-    if index < summaries.count - 1 { x += itemGap }
+    (valueText as NSString).draw(at: geometry.textOrigin(at: index, textSize: size), withAttributes: attrs)
   }
   image.unlockFocus()
   return image

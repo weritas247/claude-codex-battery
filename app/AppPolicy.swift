@@ -87,6 +87,8 @@ struct PresentationConfiguration {
   // site compiles untouched and defaults to "no custom color", which is what the colour
   // regression checks need. A `let` here would drop it from the memberwise init entirely.
   var batteryGreen: () -> String? = { nil }
+  var modernBatteryOrientation: () -> ModernBatteryOrientation = { .vertical }
+  var modernTextScale: () -> Double = { 1.0 }
 
   static let production = PresentationConfiguration(
     isMetricVisible: { productionMetricVisibility($0) },
@@ -99,6 +101,8 @@ struct PresentationConfiguration {
       return CatState(rawValue: raw)
     },
     language: { UI_LANG },
-    batteryGreen: { currentBatteryGreen() }
+    batteryGreen: { currentBatteryGreen() },
+    modernBatteryOrientation: { currentModernBatteryOrientation() },
+    modernTextScale: { currentModernTextScale() }
   )
 }

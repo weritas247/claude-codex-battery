@@ -87,7 +87,7 @@ See the [Windows documentation](windows/README.md) for optional start-at-login, 
 
 Download `ClaudeCodexBattery-vX.Y.Z.dmg` from [**Releases**](https://github.com/weritas247/claude-codex-battery/releases), open it, and drag `ClaudeCodexBattery.app` into **Applications**. That's it — the app is **signed & notarized**, so it runs with a double-click, and on first launch it offers to **start at login**. (A `.zip` is also published; it's what the in-app self-updater downloads.)
 
-It's a native Swift port of the same widget: identical battery rendering, identical dropdown, same privacy model ([see Privacy](#privacy--security) — your tokens go only to the two usage endpoints). `ccusage` remains optional for the cost breakdown. Source lives in [`app/`](app/) — `./build.sh` for a local ad-hoc build, `./release.sh` for the notarized release.
+It's a native Swift port of the same widget: its default Modern style uses one upright battery per provider, with Settings controls for vertical/horizontal orientation and 80–130% text sizing, while the optional Pixel style matches the SwiftBar battery artwork. The dropdown and privacy model remain the same ([see Privacy](#privacy--security) — your tokens go only to the two usage endpoints). `ccusage` remains optional for the cost breakdown. Source lives in [`app/`](app/) — `./build.sh` for a local ad-hoc build, `./release.sh` for the notarized release.
 
 **UI languages:** English · 한국어 · 日本語 · 简体中文 · 繁體中文 · Español — follows your system language, or pick one in **Settings → Language** (the SwiftBar plugin follows the same choice).
 
