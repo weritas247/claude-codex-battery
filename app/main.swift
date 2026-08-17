@@ -30,7 +30,8 @@ func collectSnapshot() -> Snapshot {
   let models = getClaudeModels()
   let codex = getCodex(now: now)
   let update = getUpdateInfo(now: now)
-  let claudeWait = rateLimitRemaining(host: claudeRateLimitBucket(), now: now)
+  let claudeWait = rateLimitRemaining(host: claudeRateLimitBucket(), now: now,
+                                      login: currentClaudeLoginFingerprint())
   let codexWait = rateLimitRemaining(host: CODEX_API_HOST, now: now)
 
   // Only diagnosed when the numbers are not live: the checks touch the keychain and ~/.codex, and
@@ -3156,14 +3157,24 @@ private func runCoreSelfTest() throws {
   // Anthropic rate limits the usage endpoint per config dir, not per account: ~/.claude was locked
   // out for days while another login for the same account answered fine, seconds apart. Reading a
   // different profile is safe because the figures are account-level — same numbers, working token.
-  try require(claudeKeychainService(for: "\(HOME)/.claude") == "Claude Code-credentials",
-              "claude-profile", "default-service", "the default profile stopped using the bare service name")
+  try require(claudeKeychainService(for: "\(HOME)/.claude")
+                == "Claude Code-credentials-\(claudeKeychainDigest("\(HOME)/.claude"))",
+              "claude-profile", "default-service",
+              "the default profile is no longer keyed the same way Claude Code names it")
+  try require(claudeKeychainServiceCandidates(for: "\(HOME)/.claude")
+                == [claudeKeychainService(for: "\(HOME)/.claude"), "Claude Code-credentials"],
+              "claude-profile", "default-fallback",
+              "the default profile dropped the older unhashed keychain name")
   // Verified against this Mac's real keychain: ~/.claude-personal hashes to -49b8f306, which exists.
   try require(claudeKeychainService(for: "/Users/test/.claude-work") == "Claude Code-credentials-03abf0ee",
               "claude-profile", "hashed-service", "a non-default profile no longer matches Claude Code's naming")
   try require(claudeKeychainService(for: "/Users/test/.claude-work/")
                 == claudeKeychainService(for: "/Users/test/.claude-work"),
               "claude-profile", "trailing-slash", "a trailing slash produced a different keychain service")
+  try require(claudeKeychainDigest("\(HOME)/.claude") == "7c76d8d5"
+                || HOME != "/Users/redpug",
+              "claude-profile", "default-digest",
+              "sha256(~/.claude) no longer matches the hashed keychain item Claude Code just wrote")
   try require(claudeProfileDir(nil) == "\(HOME)/.claude" && claudeProfileDir("") == "\(HOME)/.claude",
               "claude-profile", "default-dir", "an unset profile did not fall back to ~/.claude")
   try require(claudeProfileDir("/Users/test/.claude-x/") == "/Users/test/.claude-x",
@@ -3186,6 +3197,73 @@ private func runCoreSelfTest() throws {
               "claude-profile", "bucket-codex-clear", "a Claude cooldown leaked to Codex")
   resetRateLimits()
   print("self-test-core: claude-profile PASS")
+  // Refresh uses the stored refresh token instead of sending a dead access token again.
+  try require(!claudeOAuthNeedsRefresh(expiresAt: 1_000, now: 900)
+                && claudeOAuthNeedsRefresh(expiresAt: 1_000, now: 941)
+                && claudeOAuthNeedsRefresh(expiresAt: 1_000, now: 1_000)
+                && !claudeOAuthNeedsRefresh(expiresAt: nil, now: 9_999),
+              "claude-oauth", "needs-refresh",
+              "an access token was refreshed too early, too late, or with no deadline")
+  try require(parseClaudeOAuthRefresh([:], now: 1_000) == nil
+                && parseClaudeOAuthRefresh(["access_token": ""], now: 1_000) == nil,
+              "claude-oauth", "refresh-requires-access",
+              "a token response without an access token was treated as a refresh")
+  let parsedIn = parseClaudeOAuthRefresh(
+    ["access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 120], now: 1_000)
+  try require(parsedIn?.access == "new-access" && parsedIn?.refresh == "new-refresh"
+                && parsedIn?.expiresAtMs == 1_120_000,
+              "claude-oauth", "refresh-expires-in",
+              "expires_in was not converted to Claude Code's millisecond deadline")
+  let parsedAtMs = parseClaudeOAuthRefresh(
+    ["access_token": "a", "expires_at": 1_700_000_000_000], now: 1_000)
+  let parsedAtSec = parseClaudeOAuthRefresh(
+    ["access_token": "a", "expires_at": 1_700_000_000], now: 1_000)
+  try require(parsedAtMs?.expiresAtMs == 1_700_000_000_000
+                && parsedAtSec?.expiresAtMs == 1_700_000_000_000
+                && parseClaudeOAuthRefresh(["access_token": "a", "refresh_token": ""],
+                                           now: 1_000)?.refresh == nil,
+              "claude-oauth", "refresh-expires-at",
+              "expires_at / empty refresh_token were not normalized")
+  let patched = appliedClaudeOAuthTokens(
+    ["claudeAiOauth": ["accessToken": "old", "refreshToken": "keep", "scopes": ["user:inference"],
+                       "expiresAt": 1]],
+    access: "next", refresh: nil, expiresAtMs: 9)
+  let oauth = jd(patched["claudeAiOauth"])
+  try require(jstr(oauth?["accessToken"]) == "next" && jstr(oauth?["refreshToken"]) == "keep"
+                && jn(oauth?["expiresAt"]) == 9
+                && (oauth?["scopes"] as? [String]) == ["user:inference"],
+              "claude-oauth", "apply-preserves",
+              "a refresh overwrote fields Claude Code still needs, or dropped the old refresh token")
+  let hashedFresh = ClaudeOAuthStore(
+    object: ["claudeAiOauth": ["accessToken": "fresh", "expiresAt": (now + 3_600) * 1_000]],
+    source: .keychain(service: "Claude Code-credentials-7c76d8d5", account: "redpug"))
+  let bareExpired = ClaudeOAuthStore(
+    object: ["claudeAiOauth": ["accessToken": "stale", "expiresAt": (now - 60) * 1_000]],
+    source: .keychain(service: "Claude Code-credentials", account: "redpug"))
+  let picked = preferredClaudeOAuthStore([bareExpired, hashedFresh], now: now)
+  let pickedService: String? = {
+    guard let picked, case .keychain(let service, _) = picked.source else { return nil }
+    return service
+  }()
+  try require(pickedService == "Claude Code-credentials-7c76d8d5",
+              "claude-oauth", "prefers-live-over-stale",
+              "an expired unhashed default login beat the live hashed one")
+  try require(!shouldKeepRateLimit(storedLogin: nil, currentLogin: "new")
+                && !shouldKeepRateLimit(storedLogin: "old", currentLogin: "new")
+                && shouldKeepRateLimit(storedLogin: "same", currentLogin: "same")
+                && shouldKeepRateLimit(storedLogin: "old", currentLogin: nil),
+              "claude-oauth", "cooldown-follows-login",
+              "a leftover 429 was kept after the login that caused it was replaced")
+  let fpA = claudeOAuthLoginFingerprint(ClaudeOAuthStore(
+    object: ["claudeAiOauth": ["accessToken": "a", "refreshToken": "r1"]],
+    source: .keychain(service: "s", account: "u")))
+  let fpB = claudeOAuthLoginFingerprint(ClaudeOAuthStore(
+    object: ["claudeAiOauth": ["accessToken": "b", "refreshToken": "r2"]],
+    source: .keychain(service: "s", account: "u")))
+  try require(fpA != fpB && fpA.count == 16,
+              "claude-oauth", "login-fingerprint",
+              "two logins hashed to the same cooldown identity")
+  print("self-test-core: claude-oauth PASS")
 
   // ── rate-limit ───────────────────────────────────────────────────────────
   // Anthropic answers an over-eager poller with 429 + "retry-after: 2629". Ignoring that header
@@ -3247,6 +3325,24 @@ private func runCoreSelfTest() throws {
   try require(rateLimitRemaining(host: "api.anthropic.com", now: 5_000) == nil
                 && rateLimitRemaining(host: "chatgpt.com", now: 5_000) == 10,
               "rate-limit", "prune-expired", "an expired cooldown was kept in the store")
+  resetRateLimits()
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 900, now: 1_000)
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000, login: "new") == nil,
+              "rate-limit", "unlabeled-drops-on-new-login",
+              "a cooldown with no login still blocked a freshly signed-in account")
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 900, now: 1_000, login: "old")
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000, login: "new") == nil,
+              "rate-limit", "other-login-drops",
+              "a cooldown from the previous login still blocked the new one")
+  noteRateLimit(host: "api.anthropic.com", retryAfter: 900, now: 1_000, login: "same")
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000, login: "same") == 900,
+              "rate-limit", "same-login-keeps",
+              "a cooldown for the current login was discarded")
+  reloadRateLimitsFromDisk()
+  try require(rateLimitRemaining(host: "api.anthropic.com", now: 1_000, login: "same") == 900
+                && rateLimitRemaining(host: "api.anthropic.com", now: 1_000, login: "other") == nil,
+              "rate-limit", "login-survives-relaunch",
+              "the login that armed a cooldown was forgotten on relaunch")
 
   resetRateLimits()
   try? FileManager.default.removeItem(atPath: rlTempDir)
@@ -3391,13 +3487,13 @@ private func runCoreSelfTest() throws {
               "stale-recovery", "actions-sign-in-not-offered",
               "a sign-in was offered when every login was already usable")
   try require(signInCommand(for: "\(HOME)/.claude-personal/")
-                == "CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" claude",
+                == "CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" claude auth login",
               "stale-recovery", "sign-in-command",
               "the sign-in command did not target the profile it names")
   // Terminal runs a .command under a non-login shell, so a bare `claude` would not resolve.
   let script = signInScript(for: "\(HOME)/.claude-personal", cli: "/usr/local/bin/claude")
   try require(script.hasPrefix("#!/bin/bash")
-                && script.contains("CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" /usr/local/bin/claude"),
+                && script.contains("CLAUDE_CONFIG_DIR=\"\(HOME)/.claude-personal\" /usr/local/bin/claude auth login"),
               "stale-recovery", "sign-in-script",
               "the launched script would not reach the CLI or the profile it names")
   // One login means nothing to switch to, and Codex has no profile concept at all.

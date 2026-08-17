@@ -10,7 +10,7 @@ MACOS_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET:-12.0}"
 
 echo "🔨 Compiling…"
 rm -rf "$APP" "$NAME"
-swiftc -O -target "arm64-apple-macos${MACOS_DEPLOYMENT_TARGET}" *.swift -o "$NAME" -framework Cocoa -framework QuartzCore -framework ServiceManagement
+swiftc -O -target "arm64-apple-macos${MACOS_DEPLOYMENT_TARGET}" *.swift -o "$NAME" -framework Cocoa -framework QuartzCore -framework ServiceManagement -framework Security
 
 echo "📦 Assembling .app bundle…"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

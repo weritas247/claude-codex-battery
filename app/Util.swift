@@ -175,11 +175,16 @@ let RATE_LIMIT_FALLBACK_SECONDS = 600 // a 429 with no usable header still has t
 // strings the request URLs are built from — hence both fetchers interpolate these constants.
 let CLAUDE_API_HOST = "api.anthropic.com"
 let CODEX_API_HOST = "chatgpt.com"
+let CLAUDE_OAUTH_HOST = "console.anthropic.com"
+let CLAUDE_OAUTH_HOST_FALLBACK = "platform.claude.com"
 
 // Cooldowns are persisted, not just remembered. Anthropic restarts its clock on every request made
 // during an active penalty, so an app that forgets its cooldown on relaunch re-arms the very
 // lockout it was waiting out — and quitting, logging in, or updating all count as a relaunch.
 var rateLimitStorePath = "\(STATE_DIR)/.rate-limits.json"
+// Last login fingerprint that armed each bucket. A new login after an expired-token 429 is not
+// the same offender — keeping that cooldown just shows "rate limited" over a live login.
+private var rateLimitLoginByHost: [String: String] = [:]
 private var rateLimitUntil: [String: Int] = [:]
 private var rateLimitLoaded = false
 private let rateLimitLock = NSLock()
@@ -189,6 +194,18 @@ private func loadRateLimitsLocked() {
   guard !rateLimitLoaded else { return }
   rateLimitLoaded = true
   guard let stored = jd(readJSONFile(rateLimitStorePath)) else { return }
+  if let untils = jd(stored["until"]) {
+    for (host, value) in untils {
+      guard let until = jn(value).map({ Int($0) }) else { continue }
+      rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
+    }
+    if let logins = jd(stored["login"]) {
+      for (host, value) in logins {
+        if let login = jstr(value), !login.isEmpty { rateLimitLoginByHost[host] = login }
+      }
+    }
+    return
+  }
   for (host, value) in stored {
     guard let until = jn(value).map({ Int($0) }) else { continue }
     rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
@@ -196,8 +213,12 @@ private func loadRateLimitsLocked() {
 }
 
 private func saveRateLimitsLocked(now: Int) {
-  // Expired entries are dropped rather than carried forward forever.
-  writeJSONFile(rateLimitStorePath, rateLimitUntil.filter { $0.value > now })
+  let live = rateLimitUntil.filter { $0.value > now }
+  rateLimitUntil = live
+  rateLimitLoginByHost = rateLimitLoginByHost.filter { live[$0.key] != nil }
+  var payload: [String: Any] = ["until": live]
+  if !rateLimitLoginByHost.isEmpty { payload["login"] = rateLimitLoginByHost }
+  writeJSONFile(rateLimitStorePath, payload)
 }
 
 // Retry-After as a plain seconds count. Anthropic sends that form; anything else (an HTTP date,
@@ -207,22 +228,35 @@ func parseRetryAfter(_ raw: String?) -> Int? {
   return seconds
 }
 
-func noteRateLimit(host: String, retryAfter: Int?, now: Int) {
+func noteRateLimit(host: String, retryAfter: Int?, now: Int, login: String? = nil) {
   let until = now + (retryAfter ?? RATE_LIMIT_FALLBACK_SECONDS)
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
   loadRateLimitsLocked()
   // Never shorten an active cooldown: a later 429 with a small Retry-After must not undo a long one.
   rateLimitUntil[host] = max(rateLimitUntil[host] ?? 0, until)
+  if let login, !login.isEmpty { rateLimitLoginByHost[host] = login }
   saveRateLimitsLocked(now: now)
 }
 
+func shouldKeepRateLimit(storedLogin: String?, currentLogin: String?) -> Bool {
+  guard let currentLogin, !currentLogin.isEmpty else { return true }
+  guard let storedLogin, !storedLogin.isEmpty else { return false }
+  return storedLogin == currentLogin
+}
+
 // Seconds still to wait, or nil when the host is free to call.
-func rateLimitRemaining(host: String, now: Int) -> Int? {
+func rateLimitRemaining(host: String, now: Int, login: String? = nil) -> Int? {
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
   loadRateLimitsLocked()
   guard let until = rateLimitUntil[host], until > now else { return nil }
+  if !shouldKeepRateLimit(storedLogin: rateLimitLoginByHost[host], currentLogin: login) {
+    rateLimitUntil.removeValue(forKey: host)
+    rateLimitLoginByHost.removeValue(forKey: host)
+    saveRateLimitsLocked(now: now)
+    return nil
+  }
   return until - now
 }
 
@@ -233,6 +267,7 @@ func clearRateLimit(host: String, now: Int) {
   defer { rateLimitLock.unlock() }
   loadRateLimitsLocked()
   rateLimitUntil.removeValue(forKey: host)
+  rateLimitLoginByHost.removeValue(forKey: host)
   saveRateLimitsLocked(now: now)
 }
 
@@ -240,6 +275,7 @@ func resetRateLimits() {
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
   rateLimitUntil.removeAll()
+  rateLimitLoginByHost.removeAll()
   rateLimitLoaded = true // the store is gone too — nothing left to hydrate from
   try? FileManager.default.removeItem(atPath: rateLimitStorePath)
 }
@@ -249,6 +285,7 @@ func reloadRateLimitsFromDisk() {
   rateLimitLock.lock()
   defer { rateLimitLock.unlock() }
   rateLimitUntil.removeAll()
+  rateLimitLoginByHost.removeAll()
   rateLimitLoaded = false
 }
 
@@ -274,25 +311,40 @@ func lastHTTPStatus(bucket: String) -> Int? {
   return lastHTTPStatusByBucket[bucket]
 }
 
-// Synchronous HTTP GET (only 2xx counts as success) — token stays in headers only, never in files/process args
+// Synchronous HTTP (only 2xx counts as success) — token stays in headers/body only, never in files/process args
 // If CCB_DEBUG=1, prints status/errors to stderr (for diagnostics)
 var providerActivityHandler: ((Provider, Bool) -> Void)?
 
 // `bucket` is the cooldown key, defaulting to the host. Callers whose throttle is scoped narrower
 // than the host — Claude's is per login, not per server — pass their own key.
 func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval = 8,
-             provider: Provider? = nil, bucket: String? = nil) -> Data? {
+             provider: Provider? = nil, bucket: String? = nil, login: String? = nil) -> Data? {
+  httpSend(urlStr, method: "GET", headers: headers, body: nil, timeout: timeout,
+           provider: provider, bucket: bucket, login: login)
+}
+
+func httpPost(_ urlStr: String, headers: [String: String], body: Data, timeout: TimeInterval = 8,
+              provider: Provider? = nil, bucket: String? = nil, login: String? = nil) -> Data? {
+  httpSend(urlStr, method: "POST", headers: headers, body: body, timeout: timeout,
+           provider: provider, bucket: bucket, login: login)
+}
+
+func httpSend(_ urlStr: String, method: String, headers: [String: String], body: Data?,
+              timeout: TimeInterval = 8, provider: Provider? = nil, bucket: String? = nil,
+              login: String? = nil) -> Data? {
   guard let url = URL(string: urlStr) else { return nil }
   let host = bucket ?? url.host ?? urlStr
   // Still serving a 429 penalty — don't spend the request, and don't renew the penalty.
-  if let wait = rateLimitRemaining(host: host, now: Int(Date().timeIntervalSince1970)) {
+  if let wait = rateLimitRemaining(host: host, now: Int(Date().timeIntervalSince1970), login: login) {
     if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
-      FileHandle.standardError.write(Data("[httpGet] \(host) rate-limited, \(wait)s left — skipped\n".utf8))
+      FileHandle.standardError.write(Data("[httpSend] \(host) rate-limited, \(wait)s left — skipped\n".utf8))
     }
     return nil
   }
   var req = URLRequest(url: url, timeoutInterval: timeout)
+  req.httpMethod = method
   headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+  req.httpBody = body
   let sem = DispatchSemaphore(value: 0)
   var result: Data? = nil
   if let provider { providerActivityHandler?(provider, true) }
@@ -304,10 +356,10 @@ func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval 
     if code == 429 {
       let header = response?.value(forHTTPHeaderField: "Retry-After")
       noteRateLimit(host: host, retryAfter: parseRetryAfter(header),
-                    now: Int(Date().timeIntervalSince1970))
+                    now: Int(Date().timeIntervalSince1970), login: login)
     }
     if ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
-      let msg = "[httpGet] \(url.host ?? "?") status=\(code)\(e.map { " err=\($0.localizedDescription)" } ?? "")\n"
+      let msg = "[httpSend] \(url.host ?? "?") status=\(code)\(e.map { " err=\($0.localizedDescription)" } ?? "")\n"
       FileHandle.standardError.write(Data(msg.utf8))
     }
     if let provider { providerActivityHandler?(provider, false) }
@@ -315,7 +367,7 @@ func httpGet(_ urlStr: String, headers: [String: String], timeout: TimeInterval 
   }.resume()
   if sem.wait(timeout: .now() + timeout + 2) == .timedOut,
      ProcessInfo.processInfo.environment["CCB_DEBUG"] != nil {
-    FileHandle.standardError.write(Data("[httpGet] \(url.host ?? "?") semaphore TIMEOUT\n".utf8))
+    FileHandle.standardError.write(Data("[httpSend] \(url.host ?? "?") semaphore TIMEOUT\n".utf8))
   }
   return result
 }

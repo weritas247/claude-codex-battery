@@ -81,8 +81,10 @@ See the [Windows documentation](windows/README.md) for optional start-at-login, 
 ### Option 1 — Native app (no SwiftBar, no bun)
 
 <p align="center">
-  <img src="docs/app-icon.png" alt="App icon" width="96">&nbsp;&nbsp;&nbsp;
-  <img src="docs/app-dropdown.png" alt="App dropdown" width="380">
+  <img src="docs/app-icon.png" alt="App icon" width="96">
+</p>
+<p align="center">
+  <img src="docs/app-dropdown.png" alt="Native macOS app showing Claude Code and Codex remaining usage" width="760">
 </p>
 
 Download `ClaudeCodexBattery-vX.Y.Z.dmg` from [**Releases**](https://github.com/weritas247/claude-codex-battery/releases), open it, and drag `ClaudeCodexBattery.app` into **Applications**. That's it — the app is **signed & notarized**, so it runs with a double-click, and on first launch it offers to **start at login**. (A `.zip` is also published; it's what the in-app self-updater downloads.)
@@ -141,10 +143,10 @@ To turn the check off entirely, comment out the `getUpdateInfo()` call near the 
 
 ## Privacy & security
 
-- **Claude limits come straight from Anthropic.** The widget reads your Claude Code OAuth token from the macOS Keychain (item `Claude Code-credentials`) and calls `api.anthropic.com/api/oauth/usage` — the same endpoint `/usage` uses. The token is sent **only to api.anthropic.com**, passed via stdin (never visible in `ps`), and never written to disk or logs. macOS may show a one-time Keychain permission prompt — click **Always Allow**. (Clicking *Deny* makes macOS re-prompt on every refresh — if you'd rather the widget never touch the Keychain, run `touch ~/.claude/swiftbar/.no-live` instead; it then reads local cache files only, like v1.1.)
+- **Claude limits come straight from Anthropic.** The widget reads your Claude Code OAuth token from the macOS Keychain (item `Claude Code-credentials`) and calls `api.anthropic.com/api/oauth/usage` — the same endpoint `/usage` uses. If that access token has expired, it uses the stored refresh token at `console.anthropic.com/v1/oauth/token` (falling back to `platform.claude.com`) and writes the new tokens back to the same Keychain item Claude Code already uses. Tokens are sent **only** to those Anthropic hosts, never written to logs, and never left in process arguments. macOS may show a one-time Keychain permission prompt — click **Always Allow**. (Clicking *Deny* makes macOS re-prompt on every refresh — if you'd rather the widget never touch the Keychain, run `touch ~/.claude/swiftbar/.no-live` instead; it then reads local cache files only, like v1.1.)
 - **Codex limits come straight from OpenAI.** Likewise, the widget reads your Codex OAuth token from `~/.codex/auth.json` and calls `chatgpt.com/backend-api/wham/usage` — the same account-level endpoint Codex CLI polls itself. The token is sent **only to chatgpt.com**, via stdin (never visible in `ps`), and never written to disk or logs. (`touch ~/.claude/swiftbar/.no-live` disables both live queries; it then reads local files only.)
 - **No API keys touched.** Only the OAuth login tokens above are read — never any `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`.
-- **No usage data leaves your machine.** Nothing is uploaded anywhere; the only outbound calls are the two usage queries above (to Anthropic and OpenAI) and the optional daily update check ([Updating](#updating)).
+- **No usage data leaves your machine.** Nothing is uploaded anywhere; the only outbound calls are the usage queries (to Anthropic and OpenAI), the Claude token refresh when the stored access token is expired, and the optional daily update check ([Updating](#updating)).
 - **No conversation content.** From the Codex session-log fallback it parses only the `rate_limits` object (numbers), never the messages.
 - **Auditable in one sitting.** The whole widget is a single dependency-free script — grep for `curl`/`fetch` and you've seen every network call it can make.
 
