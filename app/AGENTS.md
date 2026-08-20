@@ -46,5 +46,5 @@ cd app
 
 ## NOTES
 
-- Local builds target arm64 macOS 12.0 and ad-hoc sign the resulting bundle.
+- Local builds target arm64 macOS 12.0. build.sh signs with the first working Apple-issued certificate so the Keychain "Always Allow" grant survives rebuilds, falling back to ad-hoc only when no certificate can sign.
 - `--self-update`, `--render-glint`, and `--test-activity-monitor` are additional headless paths implemented in `main.swift`.

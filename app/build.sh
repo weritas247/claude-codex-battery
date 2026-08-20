@@ -36,7 +36,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signing for local use (free — passes Gatekeeper on your own Mac. Use release.sh for public distribution)
-codesign --force --deep --sign - "$APP" 2>/dev/null && echo "✅ ad-hoc signing complete" || echo "ⓘ skipped ad-hoc signing"
+# Sign with a stable identity when one exists. Keychain "Always Allow" is recorded against the
+# signature's designated requirement; an ad-hoc requirement is just this build's cdhash, so every
+# rebuild voids the grant and re-prompts for the Keychain password. Any Apple-issued certificate
+# keeps the requirement stable across rebuilds. (Use release.sh for public distribution.)
+# A listed identity can still fail to sign (errSecInternalComponent — orphaned private key), so
+# each candidate is tried until one actually succeeds instead of trusting the first match.
+SIGNED=""
+while IFS= read -r IDENTITY; do
+  [ -n "$IDENTITY" ] || continue
+  if codesign --force --deep --sign "$IDENTITY" "$APP" 2>/dev/null; then
+    echo "✅ signed with: $IDENTITY"; SIGNED=1; break
+  fi
+done <<EOF2
+$(security find-identity -v -p codesigning 2>/dev/null | grep -E '"(Developer ID Application|Apple Development|Apple Distribution)' | sed 's/.*"\(.*\)"/\1/')
+EOF2
+if [ -z "$SIGNED" ]; then
+  # Ad-hoc fallback for Macs without any working certificate (free — passes Gatekeeper on your own Mac)
+  codesign --force --deep --sign - "$APP" 2>/dev/null && echo "✅ ad-hoc signing complete" || echo "ⓘ skipped ad-hoc signing"
+fi
 
 echo "✅ Build complete: $(pwd)/$APP (v$VERSION)"
